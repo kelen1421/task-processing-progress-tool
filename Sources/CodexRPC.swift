@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct ChatFailure: LocalizedError {
     let message: String
@@ -21,11 +22,16 @@ final class CodexRPC {
     private var sequence = 0
     private var generation = 0
 
-    static func executable() -> URL? {
-        let home = NSHomeDirectory()
-        let paths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map { String($0) + "/codex" }
-        let candidates = paths + ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", home + "/.local/bin/codex", home + "/.npm-global/bin/codex", "/Applications/Codex.app/Contents/Resources/codex", "/Applications/ChatGPT.app/Contents/Resources/codex"]
-        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }).map { URL(fileURLWithPath: $0) }
+    static func executable(path: String = ProcessInfo.processInfo.environment["PATH"] ?? "", home: String = NSHomeDirectory(), isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }) -> URL? {
+        let paths = path.split(separator: ":").map { String($0) + "/codex" }
+        let bundled = ["/Applications", home + "/Applications"].flatMap { directory in
+            ["Codex.app", "ChatGPT.app"].flatMap { app in
+                let resources = directory + "/" + app + "/Contents/Resources/"
+                return [resources + "codex", resources + "codex-cli/CodexCLI.app/Contents/MacOS/codex"]
+            }
+        }
+        let candidates = paths + ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", home + "/.local/bin/codex", home + "/.npm-global/bin/codex"] + bundled
+        return candidates.first(where: isExecutable).map { URL(fileURLWithPath: $0) }
     }
     func launch(executable: URL, arguments: [String] = ["app-server", "--stdio"], root: String, completion: @escaping Reply) {
         queue.async { [self] in
@@ -96,12 +102,26 @@ final class CodexRPC {
         try input.write(contentsOf: data)
     }
     private func consume(_ data: Data) {
-        buffer.append(data)
-        guard buffer.count <= 32 * 1024 * 1024 else { process?.terminate(); fail("聊天记录过大，请在 Codex 中查看。" ); return }
-        while let newline = buffer.firstIndex(of: 10) {
-            let line = buffer.prefix(upTo: newline); buffer.removeSubrange(...newline)
-            guard !line.isEmpty else { continue }
-            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
+        // Search each incoming byte once. Rescanning the entire buffered history
+        // for every pipe fragment makes large desktop conversations quadratic.
+        data.withUnsafeBytes { bytes in
+            guard let start = bytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            var offset = 0
+            while offset < bytes.count {
+                let newline = memchr(start.advanced(by: offset), 10, bytes.count - offset)
+                let length = newline.map { start.distance(to: $0.assumingMemoryBound(to: UInt8.self)) - offset } ?? (bytes.count - offset)
+                guard buffer.count + length <= 32 * 1024 * 1024 else { fail("聊天记录过大，请在 Codex 中查看。"); return }
+                buffer.append(start.advanced(by: offset), count: length)
+                offset += length
+                guard newline != nil else { return }
+                let line = buffer; buffer = Data(); offset += 1
+                consumeLine(line)
+            }
+        }
+    }
+    private func consumeLine(_ line: Data) {
+            guard !line.isEmpty else { return }
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return }
             if let method = object["method"] as? String {
                 let params = object["params"] as? [String: Any] ?? [:]
                 if let id = object["id"] { DispatchQueue.main.async { [weak self] in self?.serverRequest?(id, method, params) } }
@@ -110,7 +130,6 @@ final class CodexRPC {
                 if let error = object["error"] as? [String: Any] { deliver(reply, .failure(ChatFailure(message: error["message"] as? String ?? "Codex 请求失败。"))) }
                 else { deliver(reply, .success(object["result"] as? [String: Any] ?? [:])) }
             }
-        }
     }
     private func deliver(_ reply: @escaping Reply, _ result: Result<[String: Any], Error>) { DispatchQueue.main.async { reply(result) } }
     private func fail(_ message: String, inform: Bool = true) {

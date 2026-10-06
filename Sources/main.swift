@@ -1165,6 +1165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func applicationWillTerminate(_ notification: Notification) { chatController.shutdown() }
 }
+if CommandLine.arguments.contains("--diagnose-chat") { exit(ChatChecks.diagnose() ? 0 : 1) }
 if let flag = CommandLine.arguments.firstIndex(of: "--selfcheck-chat"), CommandLine.arguments.count > flag + 3 {
     ChatChecks.run(python: CommandLine.arguments[flag + 1], fixture: CommandLine.arguments[flag + 2], root: CommandLine.arguments[flag + 3]); exit(0)
 }

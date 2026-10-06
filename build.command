@@ -24,8 +24,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>local.codex.progress</string>
 <key>CFBundleName</key><string>ai工作台</string>
 <key>CFBundleDisplayName</key><string>ai工作台</string>
-<key>CFBundleVersion</key><string>13</string>
-<key>CFBundleShortVersionString</key><string>1.9.0</string>
+<key>CFBundleVersion</key><string>14</string>
+<key>CFBundleShortVersionString</key><string>1.9.1</string>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>

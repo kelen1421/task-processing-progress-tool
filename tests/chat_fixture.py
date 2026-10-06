@@ -16,8 +16,9 @@ prompts = {}
 def emit(value):
     data = (json.dumps(value, ensure_ascii=False) + '\n').encode()
     # Split both framing and UTF-8 characters across pipe reads.
-    for offset in range(0, len(data), 7):
-        sys.stdout.buffer.write(data[offset:offset + 7])
+    stride = 65536 if len(data) > 100000 else 7
+    for offset in range(0, len(data), stride):
+        sys.stdout.buffer.write(data[offset:offset + stride])
         sys.stdout.buffer.flush()
 
 def result(wire, value): emit({'id': wire, 'result': value})
@@ -42,6 +43,9 @@ for line in sys.stdin:
     elif method == 'account/read': result(wire, {'account': {'type': 'apiKey'}, 'requiresOpenaiAuth': True})
     elif method == 'thread/read':
         turns = history
+        if params['threadId'] == 'large-history':
+            turns = [{'id': 'large-turn', 'status': 'completed', 'items': history[0]['items'] + [
+                {'id': 'large-tool', 'type': 'commandExecution', 'command': 'fixture', 'aggregatedOutput': 'x' * (16 * 1024 * 1024)}]}]
         if params['threadId'] == 'busy': turns = [{'id': 'busy-turn', 'status': 'inProgress', 'items': []}]
         result(wire, {'thread': {'id': params['threadId'], 'name': '示例任务', 'cwd': str(root), 'turns': turns}})
     elif method in ('thread/resume', 'thread/start'):

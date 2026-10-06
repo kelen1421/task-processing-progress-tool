@@ -1,7 +1,48 @@
 import Foundation
 
 enum ChatChecks {
+    /// Read-only check of the actual CLI transport; never resumes or sends a turn.
+    static func diagnose() -> Bool {
+        guard let executable = CodexRPC.executable() else { print("Codex CLI not found"); return false }
+        let suite = "local.codex.progress.chat-diagnose." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let model = Model(preferences: preferences)
+        let service = ChatService(model: model)
+        defer { service.rpc.stop() }
+        func wait(_ condition: () -> Bool) -> Bool {
+            let end = Date().addingTimeInterval(20)
+            while !condition() && Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+            return condition()
+        }
+        var ready: Bool?
+        service.connect { ready = $0 }
+        guard wait({ ready != nil }), ready == true else { print(service.connectionError ?? "Connection timed out"); return false }
+        var result: Result<[String: Any], Error>?
+        service.rpc.request("account/read", ["refreshToken": false]) { result = $0 }
+        guard wait({ result != nil }), case .success(let account) = result else { print("Login status unavailable"); return false }
+        let signedIn = account["account"] is [String: Any] || account["requiresOpenaiAuth"] as? Bool == false
+        result = nil
+        service.rpc.request("thread/list", ["limit": 1, "sortKey": "updated_at", "archived": false]) { result = $0 }
+        guard wait({ result != nil }), case .success(let data) = result else { print("History list unavailable"); return false }
+        var messageCount = 0
+        if let id = (data["data"] as? [[String: Any]])?.first?["id"] as? String {
+            let session = service.session(for: TaskRow(id: id, title: "诊断", project: "", path: ""))
+            service.load(session)
+            guard wait({ !session.loading }), session.error == nil else { print(session.error ?? "History read timed out"); return false }
+            messageCount = session.messages.filter { $0.role == "user" || $0.role == "assistant" }.count
+        }
+        print("PASS: CLI=\(executable.path), signed_in=\(signedIn), history_messages=\(messageCount); no task sent")
+        return true
+    }
     static func run(python: String, fixture: String, root: String) {
+        for base in ["/Applications", "/fixture-home/Applications"] {
+            for name in ["Codex.app", "ChatGPT.app"] {
+                let embedded = base + "/" + name + "/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+                precondition(CodexRPC.executable(path: "/usr/bin:/bin", home: "/fixture-home", isExecutable: { $0 == embedded })?.path == embedded, "Finder launches must discover the desktop bundled CLI without a shell PATH")
+            }
+        }
+        precondition(CodexRPC.executable(path: "/fixture-bin", isExecutable: { $0 == "/fixture-bin/codex" })?.path == "/fixture-bin/codex")
         let suite = "local.codex.progress.chat-test." + UUID().uuidString
         let preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }
@@ -28,6 +69,9 @@ enum ChatChecks {
         precondition(session.recentMessages(5).map(\.id) == (19..<24).map { "old-\($0)" })
         session.upsert(ChatMessage(id: "tool", role: "activity", text: "运行工具"))
         precondition(session.recentMessages(10).count == 10 && session.recentMessages(10).last?.id == "old-23")
+        let large = service.session(for: TaskRow(id: "large-history", title: "大型历史", project: "测试", path: root))
+        service.load(large); wait { !large.loading }
+        precondition(large.error == nil && large.messages.count == 24 && large.recentMessages(10).count == 10, "Large history must load without retaining old tool logs")
         session.draft = "未发送草稿"; service.saveDraft(session)
         precondition(preferences.dictionary(forKey: "chatDrafts")?["fixture"] as? String == session.draft)
         func send(_ text: String) { session.draft = text; service.send(session) }

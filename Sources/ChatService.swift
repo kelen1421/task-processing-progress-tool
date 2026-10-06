@@ -127,7 +127,7 @@ final class ChatService: ObservableObject {
             switch result {
             case .failure(let error): self.connecting = false; self.connectionError = error.localizedDescription; self.finishConnection(false)
             case .success:
-                self.rpc.request("initialize", ["clientInfo": ["name": "ai_workbench", "title": "ai工作台", "version": "1.9.0"], "capabilities": ["experimentalApi": true]]) { [weak self] result in
+                self.rpc.request("initialize", ["clientInfo": ["name": "ai_workbench", "title": "ai工作台", "version": "1.9.1"], "capabilities": ["experimentalApi": true]]) { [weak self] result in
                     guard let self = self else { return }
                     switch result {
                     case .failure(let error): self.rpc.stop(); self.connecting = false; self.connectionError = error.localizedDescription; self.finishConnection(false)
@@ -201,7 +201,10 @@ final class ChatService: ObservableObject {
         if let name = thread["name"] as? String, !name.isEmpty { session.title = name }
         if let cwd = thread["cwd"] as? String { session.workspace = cwd }
         let turns = thread["turns"] as? [[String: Any]] ?? []
-        if replaceMessages { session.messages = turns.flatMap { ($0["items"] as? [[String: Any]] ?? []).compactMap(ChatMessage.item) } }
+        if replaceMessages { session.messages = turns.flatMap { ($0["items"] as? [[String: Any]] ?? []).compactMap { item in
+            guard ["userMessage", "agentMessage"].contains(item["type"] as? String ?? "") else { return nil }
+            return ChatMessage.item(item)
+        } } }
         let busyInHistory = turns.last?["status"] as? String == "inProgress"
         let busyInReader = session.threadID.flatMap { id in model.rows.first { $0.id == id } }?.state == "运行中"
         session.externalBusy = busyInHistory || busyInReader

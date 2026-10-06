@@ -8,7 +8,7 @@
 
 支持 **macOS 13 及以上，Apple 芯片和 Intel Mac**。先在本机使用 Codex，软件通过本机聊天记录识别任务；无需 API 密钥。
 
-1. 打开上面的下载页，下载 `task-processing-progress-1.9.0-macos-universal.zip`。
+1. 打开上面的下载页，下载 `task-processing-progress-1.9.1-macos-universal.zip`。
 2. 完整解压，双击「安装或更新.command」。安装器自动检测应用程序目录中的旧版并覆盖，安装完成后打开工作台。
 3. 原来的个性化设置、固定任务和窗口大小继续使用；没有旧版时安装到用户的应用程序目录。
 
@@ -88,7 +88,7 @@
 
 ## 可选：安装到个人插件
 
-下载 `task-processing-progress-1.9.0-codex-plugin.zip`，完整解压后双击「安装个人插件.command」。需要 Python 3 和支持 `codex plugin` 命令的 Codex CLI。安装后可在新聊天中输入「打开ai工作台浮窗」。
+下载 `task-processing-progress-1.9.1-codex-plugin.zip`，完整解压后双击「安装个人插件.command」。需要 Python 3 和支持 `codex plugin` 命令的 Codex CLI。安装后可在新聊天中输入「打开ai工作台浮窗」。
 
 普通应用和个人插件都使用同一覆盖安装逻辑，自动识别旧名「任务处理进度」及新版「ai工作台」，停止旧进程后替换应用并清理同名旧副本。可写的原安装位置会保留，第一次安装默认用户的应用程序目录。只替换属于本软件的应用，旧安装器不会降级较新的有效版本，原有设置保存在相同的应用标识下继续使用。普通应用安装不需要 Python 或 Codex CLI；可选个人插件安装器需要它们。
 
@@ -115,6 +115,7 @@ python3 tests/check_release.py
 
 ```sh
 'dist/ai工作台.app/Contents/MacOS/CodexProgress' --diagnose
+'dist/ai工作台.app/Contents/MacOS/CodexProgress' --diagnose-chat
 ```
 
 GitHub Actions 在 Apple 芯片和 Intel 两种 macOS 环境构建和测试。主分支检查通过后，如果 `VERSION` 的版本尚无 Release，会自动发布两个下载包和校验文件。发布新版本时同步修改 `VERSION`、`build.command`、两个插件清单及对应发布说明；已存在的 Release 不会被覆盖。
