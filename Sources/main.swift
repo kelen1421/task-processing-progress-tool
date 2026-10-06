@@ -315,6 +315,7 @@ final class Model: ObservableObject {
     @Published var refreshed = Date()
     @Published var selectedTaskID: String?
     @Published var guideStep: GuideStep?
+    @Published var visiblePage = 0
     @Published var settings: PersonalizationSettings { didSet { settings.save(to: preferences) } }
     @Published private var dismissed: Set<String>
     @Published private(set) var pinnedTaskIDs: [String]
@@ -339,6 +340,10 @@ final class Model: ObservableObject {
         let mode = settings.openMode
         var updated = preset.settings; updated.openMode = mode
         settings = updated
+    }
+    func movePage(by direction: Int) {
+        let last = TaskPagination.pageCount(visible.count) - 1
+        visiblePage = min(last, max(0, min(last, visiblePage) + direction))
     }
     func isPinned(_ id: String) -> Bool { pinnedTaskIDs.contains(id) }
     func togglePin(_ id: String) {
@@ -771,10 +776,9 @@ struct Dashboard: View {
     @ObservedObject var model: Model
     var onMinimize: () -> Void = { AppDelegate.shared.minimizeChatWindow() }
     var openChatURL: (URL) -> Bool = { NSWorkspace.shared.open($0) }
-    @State private var page = 0
     var projects: [ProjectRow] { model.visible.map { model.card(for: $0) } }
-    var pages: Int { max(1, (projects.count + 3) / 4) }
-    var currentPage: Int { min(page, pages - 1) }
+    var pages: Int { TaskPagination.pageCount(projects.count) }
+    var currentPage: Int { max(0, min(model.visiblePage, pages - 1)) }
     var body: some View {
         if model.collapsed {
             TaskOrb(model: model).preferredColorScheme(model.settings.scheme).transition(.identity)
@@ -802,7 +806,7 @@ struct Dashboard: View {
                         Picker("项目", selection: $model.selected) {
                             Text("全部项目").tag("全部项目")
                             ForEach(model.projects) { project in Text(project.name).tag(project.id) }
-                        }.labelsHidden().controlSize(.small).onChange(of: model.selected) { _ in page = 0 }
+                        }.labelsHidden().controlSize(.small).onChange(of: model.selected) { _ in model.visiblePage = 0 }
                         Spacer(minLength: 0)
                         Button { AppDelegate.shared.showPersonalization() } label: { Image(systemName: "slider.horizontal.3").frame(width: 20, height: 20) }
                             .buttonStyle(.plain).help("个性化设置").accessibilityLabel("个性化设置")
@@ -825,15 +829,15 @@ struct Dashboard: View {
                     HStack {
                         Text("每 3 秒刷新").font(.system(size: 10)).foregroundColor(.secondary)
                         Spacer()
-                        Button { page = max(0, currentPage - 1) } label: { Image(systemName: "chevron.left") }.disabled(currentPage == 0).accessibilityLabel("上一页")
+                        Button { model.movePage(by: -1) } label: { Image(systemName: "chevron.left") }.disabled(currentPage == 0).accessibilityLabel("上一页")
                         Text("\(currentPage + 1)/\(pages)").font(.caption2).foregroundColor(.secondary)
-                        Button { page = min(pages - 1, currentPage + 1) } label: { Image(systemName: "chevron.right") }.disabled(currentPage >= pages - 1).accessibilityLabel("下一页")
+                        Button { model.movePage(by: 1) } label: { Image(systemName: "chevron.right") }.disabled(currentPage >= pages - 1).accessibilityLabel("下一页")
                     }.buttonStyle(.plain).padding(.horizontal, 16)
                 }.padding(10).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(model.settings.background.color).preferredColorScheme(model.settings.scheme)
                     .overlay(alignment: .bottom) {
                         HStack { PanelResizeHandle(leading: true); Spacer(); PanelResizeHandle() }.padding(2)
                     }
-            }.onChange(of: model.pinnedTaskIDs) { _ in page = 0 }.onAppear { page = 0 }
+            }.onChange(of: model.pinnedTaskIDs) { _ in model.visiblePage = 0 }
         }
     }
 }
@@ -845,6 +849,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var panel: NSPanel!
     var item: NSStatusItem!
     var timer: Timer?
+    private var wheelMonitor: Any?
+    private var wheelPageGate = WheelPageGate()
     var taskChooser: NSPanel?
     var personalizationWindow: NSWindow?
     var guideWindow: NSWindow?
@@ -885,6 +891,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.contentView?.wantsLayer = true; panel.contentView?.layer?.cornerRadius = 14; panel.contentView?.layer?.masksToBounds = true
         resize()
         position(); panel.orderFrontRegardless()
+        wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self = self, event.window === self.panel, !self.model.collapsed, !self.animatingOrb else { return event }
+            let direction = self.wheelPageGate.consume(delta: event.scrollingDeltaY, precise: event.hasPreciseScrollingDeltas,
+                                                       phase: event.phase, momentum: event.momentumPhase, time: Date().timeIntervalSinceReferenceDate)
+            if direction != 0 { self.model.movePage(by: direction) }
+            return nil
+        }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "waveform.path.ecg", accessibilityDescription: "ai工作台")
         let menu = NSMenu()
@@ -1180,11 +1193,26 @@ if CommandLine.arguments.contains("--install-app") {
     catch { FileHandle.standardError.write(Data(("无法安装 ai工作台：" + error.localizedDescription + "\n").utf8)); exit(1) }
 }
 if CommandLine.arguments.contains("--selfcheck-personalization") {
+    for (count, expected) in [(0, 1), (3, 1), (4, 2), (5, 2), (8, 3), (9, 3)] { precondition(TaskPagination.pageCount(count) == expected) }
+    var wheel = WheelPageGate()
+    precondition(wheel.consume(delta: -1, precise: false, phase: [], momentum: [], time: 1) == 1)
+    precondition(wheel.consume(delta: -1, precise: false, phase: [], momentum: [], time: 1.1) == 0)
+    precondition(wheel.consume(delta: 1, precise: false, phase: [], momentum: [], time: 1.4) == -1)
+    precondition(wheel.consume(delta: -10, precise: true, phase: .began, momentum: [], time: 2) == 0)
+    precondition(wheel.consume(delta: -25, precise: true, phase: .changed, momentum: [], time: 2.1) == 1)
+    precondition(wheel.consume(delta: -80, precise: true, phase: .changed, momentum: [], time: 2.2) == 0)
+    precondition(wheel.consume(delta: 0, precise: true, phase: .ended, momentum: [], time: 2.3) == 0)
+    precondition(wheel.consume(delta: -90, precise: true, phase: [], momentum: .changed, time: 2.4) == 0)
+    precondition(wheel.consume(delta: 40, precise: true, phase: .began, momentum: [], time: 3) == -1)
     let suite = "local.codex.progress.personalization.test." + UUID().uuidString
     let preferences = UserDefaults(suiteName: suite)!
     defer { preferences.removePersistentDomain(forName: suite) }
     let now = Date()
     let model = Model(preferences: preferences, now: now)
+    model.rows = (0..<4).map { TaskRow(id: "page-\($0)", title: "分页测试", project: "fixture", path: "", state: "运行中") }
+    model.movePage(by: 1); precondition(model.visiblePage == 1, "Full pages must lead to an empty task-entry page")
+    model.movePage(by: 1); precondition(model.visiblePage == 1)
+    model.movePage(by: -1); precondition(model.visiblePage == 0)
     precondition(model.settings == PersonalizationSettings(), "Existing users keep the original layout and click mode")
     model.togglePin("done")
     model.preferences.set(320.0, forKey: "progressWidth")

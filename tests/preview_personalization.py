@@ -27,6 +27,7 @@ for index, name, title, events in [
     (1, 'preview-active', '正在开发的示例任务', ['task_started']),
     (2, 'preview-done', '已经完成的示例任务', ['task_started', 'task_complete']),
     (3, 'preview-waiting', '等待开始的示例任务', []),
+    (4, 'preview-second-active', '第四个运行中的示例任务', ['task_started']),
 ]:
     rollout = fixtures / (name + '.jsonl')
     entries = [{'timestamp': stamp, 'type': 'event_msg', 'payload': {'type': event}} for event in events]
