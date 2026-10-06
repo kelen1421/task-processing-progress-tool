@@ -1,0 +1,10 @@
+.DS_Store
+dist/
+release/
+plugin/assets/*.app/
+*.dSYM/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example

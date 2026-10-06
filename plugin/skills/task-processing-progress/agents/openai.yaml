@@ -1,0 +1,4 @@
+interface:
+  display_name: "任务处理进度"
+  short_description: "在桌面右上角查看任务阶段、进度与完成提醒，并打开对应聊天"
+  default_prompt: "使用 $task-processing-progress 打开任务处理进度浮窗。"

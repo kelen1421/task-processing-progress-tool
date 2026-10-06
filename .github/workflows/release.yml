@@ -1,0 +1,58 @@
+name: Build, test and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build universal app
+        run: zsh build.command
+      - name: Check behavior and packaging
+        run: |
+          python3 tests/check.py
+          zsh package.command --skip-build
+          python3 tests/check_release.py
+      - name: Save distributable packages
+        if: matrix.runner == 'macos-15'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: release/
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-universal
+          path: release/
+      - name: Publish version when it has no release yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version="$(cat VERSION)"
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "Release v$version already exists; existing downloads are preserved."
+          else
+            gh release create "v$version" release/* --target "$GITHUB_SHA" --title "任务处理进度 $version" --notes-file "docs/releases/$version.md" --latest
+          fi
