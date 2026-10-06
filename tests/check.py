@@ -58,3 +58,4 @@ subprocess.run([str(binary),'--selfcheck-orb'], check=True)
 subprocess.run([str(binary),'--selfcheck-pinning'], check=True)
 
 subprocess.run([str(binary),'--selfcheck-window-actions'], check=True)
+subprocess.run([str(binary),'--selfcheck-permissions'], check=True)

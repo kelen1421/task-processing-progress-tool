@@ -8,13 +8,21 @@
 
 支持 **macOS 13 及以上，Apple 芯片和 Intel Mac**。先在本机使用 Codex，软件通过本机聊天记录识别任务；无需 API 密钥。
 
-1. 打开上面的下载页，下载 `task-processing-progress-1.7.0-macos-universal.zip`。
+1. 打开上面的下载页，下载 `task-processing-progress-1.7.1-macos-universal.zip`。
 2. 解压，把「任务处理进度.app」拖入「应用程序」。
 3. 双击打开，浮窗默认出现在屏幕右上角。
 
 普通使用只需要应用包，无需编译、无需安装个人插件。
 
 当前公开版本为本地临时签名，**尚未经过 Apple Developer ID 签名和公证**。如果 macOS 提示无法验证开发者，请确认下载来源，再按照 [Apple 官方说明](https://support.apple.com/zh-cn/102445)处理。双击最小化聊天窗口，需要按应用提示开启「任务处理进度」的辅助功能权限。
+
+### 辅助功能已开启，但仍提示未授权
+
+1. 点击菜单栏的波形图标 →「辅助功能权限 / 修复」，查看当前应用位置。
+2. 在「系统设置 → 隐私与安全 → 辅助功能」删除旧的同名条目，点 + 添加修复窗口所显示的应用，再开启权限。可点「在访达中显示」找到它。
+3. 修复窗口每 3 秒检测实际权限，显示「已生效」后再次双击任务。仍未生效时点「重启浮窗」。
+
+1.7.1 将首次授权提示改为可关闭的修复窗口，同一轮未授权期间不会反复弹出；可随时从菜单栏重新打开。个人插件统一启动 `~/Applications/任务处理进度.app`，避免不同版本的缓存副本混用。公开包仍采用临时签名，更新后旧授权可能失效，需要重新添加一次；固定安装路径本身不能保证跨版本保留权限。macOS 按代码签名身份识别应用更新，详见 [Apple 代码签名说明](https://developer.apple.com/library/archive/technotes/tn2206/)。
 
 ## 怎么使用
 
@@ -49,9 +57,9 @@
 
 ## 可选：安装到个人插件
 
-下载 `task-processing-progress-1.7.0-codex-plugin.zip`，完整解压后双击「安装个人插件.command」。需要 Python 3 和支持 `codex plugin` 命令的 Codex CLI。安装后可在新聊天中输入「打开任务处理进度浮窗」。
+下载 `task-processing-progress-1.7.1-codex-plugin.zip`，完整解压后双击「安装个人插件.command」。需要 Python 3 和支持 `codex plugin` 命令的 Codex CLI。安装后可在新聊天中输入「打开任务处理进度浮窗」。
 
-该安装器只更新「任务处理进度」及其个人插件目录条目，保留其他个人插件。普通使用可以直接打开包里的应用。
+该安装器更新「任务处理进度」及其个人插件目录条目，并将应用复制到用户的「应用程序」文件夹。插件启动时复用这份应用；旧缓存不会降级已经安装的新版。普通使用可以直接打开包里的应用。
 
 ## 从源码构建
 
@@ -62,11 +70,14 @@ git clone https://github.com/kelen1421/task-processing-progress-tool.git
 cd task-processing-progress-tool
 zsh build.command
 python3 tests/check.py
+python3 tests/check_install.py
 zsh package.command --skip-build
 python3 tests/check_release.py
 ```
 
 构建输出为 `dist/任务处理进度.app`，包含 arm64 和 x86_64 两种架构。默认使用当前开发工具的 SDK；如 SDK 与编译器不匹配，可通过 `TASK_PROGRESS_SDK=/实际路径/MacOSX.sdk zsh build.command` 指定兼容 SDK。
+
+拥有有效签名证书时，可设置 `TASK_PROGRESS_SIGNING_IDENTITY` 使用该证书签名。默认仍为临时签名；不要用只检查应用名称的宽松签名要求替代有效的签名身份。
 
 `zsh install-personal.command` 从源码构建并更新个人插件；`zsh package.command` 生成应用 ZIP、插件 ZIP 和 SHA-256 校验文件。诊断命令：
 

@@ -22,12 +22,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>local.codex.progress</string>
 <key>CFBundleName</key><string>任务处理进度</string>
 <key>CFBundleDisplayName</key><string>任务处理进度</string>
-<key>CFBundleVersion</key><string>9</string>
-<key>CFBundleShortVersionString</key><string>1.7.0</string>
+<key>CFBundleVersion</key><string>10</string>
+<key>CFBundleShortVersionString</key><string>1.7.1</string>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-codesign --force --sign - "$APP"
+codesign --force --sign "${TASK_PROGRESS_SIGNING_IDENTITY:--}" "$APP"
 printf '已生成：%s\n' "$APP"

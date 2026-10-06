@@ -5,6 +5,7 @@ APP="$ROOT/assets/任务处理进度.app"
 case "${1:-show}" in
   show|start)
     [[ -x "$APP/Contents/MacOS/CodexProgress" ]] || { print -u2 '未找到浮窗应用'; exit 1; }
+    APP="$(python3 "$ROOT/scripts/install_app.py")"
     open "$APP"
     print '已打开任务处理进度'
     ;;

@@ -25,6 +25,6 @@ PY
 codex plugin marketplace add "$HOME" --json
 MARKETPLACE_NAME="$(python3 -c 'import json,pathlib;print(json.loads((pathlib.Path.home()/".agents/plugins/marketplace.json").read_text())["name"])')"
 codex plugin add "task-processing-progress@$MARKETPLACE_NAME" --json
-open "$HOME/.codex/plugins/task-processing-progress/assets/任务处理进度.app"
+"$HOME/.codex/plugins/task-processing-progress/scripts/control.command" show
 print '已安装到个人插件并打开浮窗。'
 read -r '?按回车退出'

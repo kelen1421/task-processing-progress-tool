@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 cd "${0:A:h}"
-./build.command
+[[ "${1:-}" == --skip-build ]] || ./build.command
 python3 - <<'PY'
 from pathlib import Path
 import json,shutil
@@ -22,3 +22,4 @@ PY
 codex plugin marketplace add "$HOME" --json
 MARKETPLACE_NAME="$(python3 -c 'import json,pathlib;print(json.loads((pathlib.Path.home()/".agents/plugins/marketplace.json").read_text())["name"])')"
 codex plugin add "task-processing-progress@$MARKETPLACE_NAME" --json
+"$HOME/.codex/plugins/task-processing-progress/scripts/control.command" show

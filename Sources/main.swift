@@ -4,6 +4,54 @@ import SQLite3
 import ApplicationServices
 
 enum WindowMinimizeResult: Equatable { case minimized, noWindow, needsPermission, failed }
+struct PermissionNoticeState {
+    private(set) var automaticNoticeShown = false
+    mutating func shouldPresent(authorized: Bool, explicitlyRequested: Bool = false) -> Bool {
+        if authorized { automaticNoticeShown = false; return explicitlyRequested }
+        if explicitlyRequested { automaticNoticeShown = true; return true }
+        guard !automaticNoticeShown else { return false }
+        automaticNoticeShown = true
+        return true
+    }
+    mutating func observe(authorized: Bool) { if authorized { automaticNoticeShown = false } }
+}
+final class AccessibilityPermissionStatus: ObservableObject {
+    @Published var authorized = false
+    let applicationPath: String
+    let check: () -> Bool
+    init(applicationPath: String = Bundle.main.bundlePath, check: @escaping () -> Bool = { AXIsProcessTrusted() }) {
+        self.applicationPath = applicationPath; self.check = check; refresh()
+    }
+    func refresh() { authorized = check() }
+}
+struct AccessibilityPermissionView: View {
+    @ObservedObject var status: AccessibilityPermissionStatus
+    var restart: () -> Void
+    var close: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(status.authorized ? "辅助功能权限已生效" : "辅助功能权限尚未生效", systemImage: status.authorized ? "checkmark.circle.fill" : "lock.circle")
+                .font(.headline).foregroundColor(status.authorized ? .green : .primary)
+            Text(status.authorized ? "可以关闭此窗口，再双击任务方框最小化聊天窗口。" : "系统设置中的开关开启后，这里会自动检测。若开关已开启却仍未生效，请删除旧的同名条目，再点 + 添加下面这份应用并开启权限。")
+                .fixedSize(horizontal: false, vertical: true)
+            Text("当前运行的应用").font(.caption).foregroundColor(.secondary)
+            Text(status.applicationPath).font(.caption).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(8).background(Color.secondary.opacity(0.1)).cornerRadius(6)
+            HStack {
+                Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: status.applicationPath)]) }
+                Button("打开辅助功能设置") { ChatWindowController.openPermissionSettings() }
+            }
+            Text("已重新添加却仍未生效时，请重启浮窗后重试。任务固定状态和窗口大小会保留。")
+                .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("重新检测") { status.refresh() }
+                Button("重启浮窗", action: restart)
+                Spacer()
+                Button("关闭", action: close).keyboardShortcut(.defaultAction)
+            }
+        }.padding(20).frame(minWidth: 360, idealWidth: 420, maxWidth: .infinity)
+    }
+}
 struct WindowMinimizeOperation<Window> {
     var authorized: () -> Bool
     var windows: () -> (focused: Window?, main: Window?, all: [Window])
@@ -40,19 +88,21 @@ enum ChatWindowController {
         return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
     }
     static func minimizeChatWindow() -> WindowMinimizeResult {
+        guard AXIsProcessTrusted() else { return .needsPermission }
         guard let link = URL(string: "codex://threads"),
               let applicationURL = NSWorkspace.shared.urlForApplication(toOpen: link),
               let identifier = Bundle(url: applicationURL)?.bundleIdentifier,
               let application = NSRunningApplication.runningApplications(withBundleIdentifier: identifier).first(where: { !$0.isTerminated }) else { return .noWindow }
+        let owner = AXUIElementCreateApplication(application.processIdentifier)
+        AXUIElementSetMessagingTimeout(owner, 1)
+        var result: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(owner, kAXWindowsAttribute as CFString, &result)
+        guard error == .success else { return AXIsProcessTrusted() ? .failed : .needsPermission }
         return WindowMinimizeOperation<AXUIElement>(authorized: { AXIsProcessTrusted() }, windows: {
-            let owner = AXUIElementCreateApplication(application.processIdentifier)
-            AXUIElementSetMessagingTimeout(owner, 1)
-            return (element(owner, kAXFocusedWindowAttribute), element(owner, kAXMainWindowAttribute), value(owner, kAXWindowsAttribute) as? [AXUIElement] ?? [])
+            (element(owner, kAXFocusedWindowAttribute), element(owner, kAXMainWindowAttribute), result as? [AXUIElement] ?? [])
         }, available: canMinimize, minimize: minimize).run()
     }
     static func openPermissionSettings() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") { NSWorkspace.shared.open(url) }
     }
 }
@@ -742,6 +792,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var item: NSStatusItem!
     var timer: Timer?
     var taskChooser: NSPanel?
+    var permissionWindow: NSWindow?
+    let permissionStatus = AccessibilityPermissionStatus()
+    var permissionNotice = PermissionNoticeState()
     var expandedSize = NSSize(width: 240, height: 268)
     let orbSize = NSSize(width: 64, height: 64)
     private var changingMode = false
@@ -777,11 +830,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(withTitle: "切换圆球 / 浮窗", action: #selector(toggleOrbMode), keyEquivalent: "")
         menu.addItem(withTitle: "移回右上角", action: #selector(position), keyEquivalent: "")
         menu.addItem(withTitle: "新建 / 进入任务", action: #selector(showTaskChooser), keyEquivalent: "")
+        menu.addItem(withTitle: "辅助功能权限 / 修复", action: #selector(showPermissionSettings), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "退出", action: #selector(quit), keyEquivalent: "q")
         for entry in menu.items { entry.target = self }; item.menu = menu
-        model.refresh(); timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.model.refresh() }
+        model.refresh(); timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            self?.model.refresh()
+            self?.refreshPermissionStatus()
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(position), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        if CommandLine.arguments.contains("--show-permissions") { showPermissionSettings() }
     }
     @objc func position() {
         guard let screen = panel?.screen ?? NSScreen.main else { return }
@@ -835,21 +893,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.setFrameOrigin(NSPoint(x: min(screen.maxX - frame.width, max(screen.minX, frame.minX + translation.width)), y: min(screen.maxY - frame.height, max(screen.minY, frame.minY + translation.height))))
     }
     func minimizeChatWindow() {
+        refreshPermissionStatus()
         switch ChatWindowController.minimizeChatWindow() {
         case .minimized, .noWindow: return
         case .needsPermission:
-            let alert = NSAlert()
-            alert.messageText = "需要辅助功能权限"
-            alert.informativeText = "双击最小化 ChatGPT 窗口，需要允许「任务处理进度」使用辅助功能。请在系统设置 → 隐私与安全 → 辅助功能中开启，然后再双击任务方框。"
-            alert.addButton(withTitle: "打开辅助功能设置"); alert.addButton(withTitle: "稍后")
-            NSApp.activate(ignoringOtherApps: true)
-            if alert.runModal() == .alertFirstButtonReturn { ChatWindowController.openPermissionSettings() }
+            if permissionNotice.shouldPresent(authorized: false) { presentPermissionWindow() }
         case .failed:
             let alert = NSAlert()
             alert.messageText = "暂时无法最小化 ChatGPT 窗口"
-            alert.informativeText = "请确认辅助功能权限已开启、ChatGPT 窗口已打开，再双击一次。"
+            alert.informativeText = "辅助功能权限已开启，但未能操作聊天窗口。请关闭聊天中的弹窗，再双击一次；也可从菜单栏的“辅助功能权限 / 修复”检查当前应用。"
             alert.addButton(withTitle: "确定")
             NSApp.activate(ignoringOtherApps: true); alert.runModal()
+        }
+    }
+    func applicationDidBecomeActive(_ notification: Notification) { refreshPermissionStatus() }
+    func refreshPermissionStatus() {
+        permissionStatus.refresh()
+        permissionNotice.observe(authorized: permissionStatus.authorized)
+    }
+    @objc func showPermissionSettings() {
+        refreshPermissionStatus()
+        _ = permissionNotice.shouldPresent(authorized: permissionStatus.authorized, explicitlyRequested: true)
+        presentPermissionWindow()
+    }
+    func presentPermissionWindow() {
+        if let window = permissionWindow {
+            NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil); return
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 310), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "辅助功能权限 / 修复"; window.level = .floating
+        window.isReleasedWhenClosed = false; window.delegate = self
+        window.contentView = NSHostingView(rootView: AccessibilityPermissionView(status: permissionStatus, restart: { [weak self] in self?.restartApplication() }, close: { [weak self] in self?.permissionWindow?.close() }))
+        window.center(); permissionWindow = window
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+    }
+    func restartApplication() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
+            DispatchQueue.main.async {
+                if error == nil { NSApp.terminate(nil) }
+                else {
+                    let alert = NSAlert(); alert.messageText = "无法自动重启"
+                    alert.informativeText = "请退出浮窗，再重新打开「任务处理进度」。"
+                    alert.runModal()
+                }
+            }
         }
     }
     func resizeProgress(from frame: NSRect, translation: CGSize, leading: Bool) {
@@ -874,9 +963,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func windowWillClose(_ notification: Notification) {
         if let window = notification.object as? NSWindow, window === taskChooser { taskChooser = nil }
+        if let window = notification.object as? NSWindow, window === permissionWindow { permissionWindow = nil }
     }
     @objc func toggle() { if panel.isVisible { panel.orderOut(nil) } else { panel.orderFrontRegardless() } }
     @objc func quit() { NSApp.terminate(nil) }
+}
+if CommandLine.arguments.contains("--selfcheck-permissions") {
+    var notice = PermissionNoticeState()
+    var presentations = 0
+    for _ in 0..<100 { if notice.shouldPresent(authorized: false) { presentations += 1 } }
+    precondition(presentations == 1, "Repeated denied double clicks must not keep presenting permission UI")
+    precondition(notice.shouldPresent(authorized: false, explicitlyRequested: true), "The repair entry must stay available after dismissing the first notice")
+    precondition(!notice.shouldPresent(authorized: false))
+    var granted = false
+    let status = AccessibilityPermissionStatus(applicationPath: "/fixture/任务处理进度.app", check: { granted })
+    precondition(!status.authorized)
+    granted = true; status.refresh(); notice.observe(authorized: status.authorized)
+    precondition(status.authorized && !notice.shouldPresent(authorized: true), "Grant detection must enable the next operation without another prompt")
+    granted = false; status.refresh(); notice.observe(authorized: status.authorized)
+    precondition(!status.authorized && notice.shouldPresent(authorized: status.authorized), "A later revocation can show one new notice")
+    precondition(!notice.shouldPresent(authorized: false))
+    print("PASS: coalesced denial notice, explicit repair, grant refresh, later revocation")
+    exit(0)
 }
 if CommandLine.arguments.contains("--selfcheck-window-actions") {
     var inspected = false
