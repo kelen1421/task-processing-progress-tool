@@ -316,6 +316,8 @@ final class Model: ObservableObject {
     @Published var selectedTaskID: String?
     @Published var guideStep: GuideStep?
     @Published var visiblePage = 0
+    @Published var chatDestination: TaskChatDestination { didSet { preferences.set(chatDestination.rawValue, forKey: "chatDestination") } }
+    @Published var recentChatCount: Int { didSet { preferences.set(recentChatCount, forKey: "recentChatCount") } }
     @Published var settings: PersonalizationSettings { didSet { settings.save(to: preferences) } }
     @Published private var dismissed: Set<String>
     @Published private(set) var pinnedTaskIDs: [String]
@@ -326,6 +328,9 @@ final class Model: ObservableObject {
     init(reader: Reader = Reader(root: ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory() + "/.codex"), preferences: UserDefaults = .standard, now: Date = Date()) {
         self.reader = reader; self.preferences = preferences
         self.settings = PersonalizationSettings.load(from: preferences)
+        self.chatDestination = preferences.string(forKey: "chatDestination").flatMap(TaskChatDestination.init(rawValue:)) ?? .builtIn
+        let recent = preferences.integer(forKey: "recentChatCount")
+        self.recentChatCount = [5, 10, 20].contains(recent) ? recent : 10
         self.collapsed = preferences.bool(forKey: "orbMode")
         self.dismissed = Set(preferences.stringArray(forKey: "dismissedCompletions") ?? [])
         self.pinnedTaskIDs = (preferences.stringArray(forKey: "pinnedTasks") ?? []).reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
@@ -335,6 +340,10 @@ final class Model: ObservableObject {
     func acknowledge(_ project: ProjectRow) {
         for row in project.tasks { if let key = row.completionKey { dismissed.insert(key) } }
         preferences.set(Array(dismissed), forKey: "dismissedCompletions")
+    }
+    var taskClickHelp: String {
+        let target = chatDestination == .builtIn ? "内置对话" : "Codex 对话"
+        return settings.openMode == .single ? "单击打开\(target)，双击最小化\(target)窗口" : "单击选中任务，双击打开\(target)"
     }
     func applyPreset(_ preset: PersonalizationPreset) {
         let mode = settings.openMode
@@ -467,7 +476,7 @@ struct TaskOrb: View {
     }
     var body: some View {
         ZStack {
-            Circle().fill(model.settings.background.color)
+            Circle().fill(model.settings.floatingBackground)
             Circle().stroke(accent.opacity(summary.hasCompletion ? 0.45 : 0.16), lineWidth: 1)
             if summary.hasCompletion {
                 TimelineView(.animation(minimumInterval: 0.1, paused: reduceMotion)) { timeline in
@@ -548,7 +557,7 @@ struct ProjectDetails: View {
                         HStack {
                             Text(row.state).foregroundColor(row.color)
                             Spacer()
-                            Button("打开聊天") { if let u = URL(string: "codex://threads/" + row.id) { NSWorkspace.shared.open(u) } }
+                            Button("打开聊天") { if let u = URL(string: "codex://threads/" + row.id) { _ = AppDelegate.shared.openTaskChatURL(u) } }
                         }.font(.caption)
                     }
                     Divider()
@@ -571,7 +580,7 @@ struct ProjectCard: View {
     var project: ProjectRow
     var height: CGFloat = 84
     var onDoubleClick: () -> Void = {}
-    var openChatURL: (URL) -> Bool = { NSWorkspace.shared.open($0) }
+    var openChatURL: (URL) -> Bool = { AppDelegate.shared.openTaskChatURL($0) }
     @State private var showingDetails = false
     @State private var openFailed = false
     var accessibleProgress: String { project.running || project.completed ? project.phaseLabel + "，" + project.progressLabel : project.progressLabel }
@@ -601,8 +610,8 @@ struct ProjectCard: View {
             .accessibilityElement(children: .ignore).accessibilityAddTraits(.isButton)
             .accessibilityLabel("\(project.name)，\(project.pinned ? "已锁定，" : "")\(accessibleProgress)，\(project.remaining)，打开聊天")
             .accessibilityAction { openChat() }
-            .accessibilityAction(named: Text("最小化 ChatGPT 窗口")) { onDoubleClick() }
-            .help(model.settings.openMode.help)
+            .accessibilityAction(named: Text("最小化聊天窗口")) { onDoubleClick() }
+            .help(model.taskClickHelp)
             .contextMenu {
                 Button("打开任务聊天") { openChat() }
                 TaskPinMenu(model: model, id: project.id)
@@ -660,11 +669,13 @@ struct TaskChooser: View {
     }
     func create() {
         guard let url = ChatLink.newTask(prompt: prompt, path: workspace.isEmpty ? nil : selectedPath) else { failure = "项目目录不存在，请重新选择。"; return }
-        guard NSWorkspace.shared.open(url) else { failure = "无法打开 Codex，请确认已安装。"; return }
+        if model.chatDestination == .builtIn {
+            AppDelegate.shared.chatController.newTask(prompt: prompt, workspace: workspace.isEmpty ? "" : selectedPath ?? "")
+        } else if !AppDelegate.shared.externalChatOpener(url) { failure = "无法打开 Codex，请确认已安装。"; return }
         close()
     }
     func enter(_ row: TaskRow) {
-        guard let url = URL(string: "codex://threads/" + row.id), NSWorkspace.shared.open(url) else { failure = "无法打开该聊天。"; return }
+        guard let url = URL(string: "codex://threads/" + row.id), AppDelegate.shared.openTaskChatURL(url) else { failure = "无法打开该聊天。"; return }
         if row.state == "本轮结束" { model.acknowledge(ProjectRow(id: row.id, tasks: [row])) }
         close()
     }
@@ -688,7 +699,7 @@ struct TaskChooser: View {
                     TextEditor(text: $prompt).font(.system(size: 13)).padding(4)
                     if prompt.isEmpty { Text("描述你想完成的任务…").font(.system(size: 13)).foregroundColor(.secondary).padding(9).allowsHitTesting(false) }
                 }.frame(maxHeight: .infinity).background(Color.white.opacity(0.05)).cornerRadius(8)
-                Text("打开后在 Codex 中点击发送，开始执行任务。").font(.caption2).foregroundColor(.secondary)
+                Text(model.chatDestination == .builtIn ? "打开后在内置对话框点击发送，开始执行任务。" : "打开后在 Codex 中点击发送，开始执行任务。").font(.caption2).foregroundColor(.secondary)
                 HStack { Spacer(); Button("新建并打开") { create() }.buttonStyle(.borderedProminent).tint(.cyan) }
             } else {
                 TextField("搜索任务标题或项目", text: $search).textFieldStyle(.roundedBorder)
@@ -775,7 +786,7 @@ struct PanelResizeHandle: View {
 struct Dashboard: View {
     @ObservedObject var model: Model
     var onMinimize: () -> Void = { AppDelegate.shared.minimizeChatWindow() }
-    var openChatURL: (URL) -> Bool = { NSWorkspace.shared.open($0) }
+    var openChatURL: (URL) -> Bool = { AppDelegate.shared.openTaskChatURL($0) }
     var projects: [ProjectRow] { model.visible.map { model.card(for: $0) } }
     var pages: Int { TaskPagination.pageCount(projects.count) }
     var currentPage: Int { max(0, min(model.visiblePage, pages - 1)) }
@@ -833,7 +844,7 @@ struct Dashboard: View {
                         Text("\(currentPage + 1)/\(pages)").font(.caption2).foregroundColor(.secondary)
                         Button { model.movePage(by: 1) } label: { Image(systemName: "chevron.right") }.disabled(currentPage >= pages - 1).accessibilityLabel("下一页")
                     }.buttonStyle(.plain).padding(.horizontal, 16)
-                }.padding(10).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(model.settings.background.color).preferredColorScheme(model.settings.scheme)
+                }.padding(10).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(model.settings.floatingBackground).preferredColorScheme(model.settings.scheme)
                     .overlay(alignment: .bottom) {
                         HStack { PanelResizeHandle(leading: true); Spacer(); PanelResizeHandle() }.padding(2)
                     }
@@ -845,7 +856,13 @@ struct Dashboard: View {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     static var shared: AppDelegate!
     let model: Model
-    init(model: Model = Model()) { self.model = model; super.init() }
+    private let injectedChatService: ChatService?
+    let externalChatOpener: (URL) -> Bool
+    private let externalChatMinimizer: (() -> Void)?
+    init(model: Model = Model(), chatService: ChatService? = nil, externalChatOpener: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }, externalChatMinimizer: (() -> Void)? = nil) {
+        self.model = model; self.injectedChatService = chatService; self.externalChatOpener = externalChatOpener
+        self.externalChatMinimizer = externalChatMinimizer; super.init()
+    }
     var panel: NSPanel!
     var item: NSStatusItem!
     var timer: Timer?
@@ -856,6 +873,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var guideWindow: NSWindow?
     private var guideRestoreCollapsed = false
     var permissionWindow: NSWindow?
+    lazy var chatController = BuiltInChatController(model: model, service: injectedChatService)
+    func openTaskChatURL(_ url: URL) -> Bool {
+        if model.chatDestination == .codex { return externalChatOpener(url) }
+        guard url.scheme == "codex", url.host == "threads", let id = url.pathComponents.last,
+              let row = model.rows.first(where: { $0.id == id }) else { return false }
+        chatController.open(row); return true
+    }
     let permissionStatus = AccessibilityPermissionStatus()
     var permissionNotice = PermissionNoticeState()
     var expandedSize = NSSize(width: 240, height: 268)
@@ -1014,6 +1038,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.setFrameOrigin(NSPoint(x: min(screen.maxX - frame.width, max(screen.minX, frame.minX + translation.width)), y: min(screen.maxY - frame.height, max(screen.minY, frame.minY + translation.height))))
     }
     func minimizeChatWindow() {
+        if model.chatDestination == .builtIn { chatController.minimize(); return }
+        if let minimize = externalChatMinimizer { minimize(); return }
         refreshPermissionStatus()
         switch ChatWindowController.minimizeChatWindow() {
         case .minimized, .noWindow: return
@@ -1130,6 +1156,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc func toggle() { if panel.isVisible { panel.orderOut(nil) } else { panel.orderFrontRegardless() } }
     @objc func quit() { NSApp.terminate(nil) }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard chatController.service.activeCount > 0 else { return .terminateNow }
+        let alert = NSAlert(); alert.messageText = "内置对话中仍有任务正在执行"
+        alert.informativeText = "退出工作台会停止这些任务。仅关闭聊天窗口，任务会继续执行。"
+        alert.addButton(withTitle: "继续执行"); alert.addButton(withTitle: "退出并停止")
+        return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+    }
+    func applicationWillTerminate(_ notification: Notification) { chatController.shutdown() }
+}
+if let flag = CommandLine.arguments.firstIndex(of: "--selfcheck-chat"), CommandLine.arguments.count > flag + 3 {
+    ChatChecks.run(python: CommandLine.arguments[flag + 1], fixture: CommandLine.arguments[flag + 2], root: CommandLine.arguments[flag + 3]); exit(0)
 }
 if CommandLine.arguments.contains("--selfcheck-installation") {
     func checkInstallation() throws {
@@ -1225,10 +1262,17 @@ if CommandLine.arguments.contains("--selfcheck-personalization") {
         precondition(preferences.double(forKey: "progressWidth") == 320, "Appearance changes must keep pins and panel size")
     }
     model.settings.progress = RGBColor(hex: 0x123ABC)
+    model.settings.backgroundOpacity = 0.5
     model.settings.background = RGBColor(hex: 0xFAFAFA)
     model.settings.completion = RGBColor(hex: 0x385B3E)
     model.settings.layout = .list; model.settings.progressStyle = .segments
     precondition(Model(preferences: preferences).settings == model.settings && model.settings.scheme == .light)
+    var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(model.settings)) as! [String: Any]
+    legacy.removeValue(forKey: "backgroundOpacity")
+    preferences.set(try JSONSerialization.data(withJSONObject: legacy), forKey: "personalization")
+    let migrated = Model(preferences: preferences).settings
+    precondition(migrated.background == model.settings.background && migrated.progress == model.settings.progress && migrated.openMode == .double && migrated.backgroundOpacity == 1, "Opacity migration must preserve old colors, layout and click mode")
+    model.settings.save(to: preferences)
     model.settings.background = RGBColor(hex: 0x101010)
     precondition(model.settings.scheme == .dark)
     precondition(TaskOpenMode.single.action(clickCount: 1) == .open && TaskOpenMode.single.action(clickCount: 2) == .minimize)

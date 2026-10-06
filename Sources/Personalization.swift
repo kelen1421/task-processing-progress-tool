@@ -18,7 +18,7 @@ enum TaskOpenMode: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String { self == .single ? "单击打开任务" : "双击打开任务" }
     var help: String {
-        self == .single ? "单击打开任务聊天，双击将 ChatGPT 窗口最小化到 Dock" : "单击选中任务，双击打开任务聊天"
+        self == .single ? "单击打开任务聊天，双击最小化所选聊天窗口" : "单击选中任务，双击打开任务聊天"
     }
     func action(clickCount: Int) -> TaskClickAction {
         switch (self, clickCount) {
@@ -52,6 +52,7 @@ struct PersonalizationSettings: Codable, Equatable {
     var progressStyle: TaskProgressStyle = .bar
     var openMode: TaskOpenMode = .single
     var background = RGBColor(hex: 0x11141F)
+    var backgroundOpacity: Double = 1
     var progress = RGBColor(hex: 0x2DCBE8)
     var completion = RGBColor(hex: 0x29D653)
     var scheme: ColorScheme { background.isLight ? .light : .dark }
@@ -59,17 +60,33 @@ struct PersonalizationSettings: Codable, Equatable {
     var cardBackground: Color { foreground.opacity(0.055) }
     var track: Color { foreground.opacity(0.12) }
     var waiting: Color { foreground.opacity(0.5) }
+    var floatingBackground: Color { background.color.opacity(backgroundOpacity) }
     func statusColor(_ project: ProjectRow) -> Color {
         project.completed ? completion.color : project.running ? progress.color : project.waiting ? waiting : .orange
     }
     static func load(from preferences: UserDefaults) -> Self {
         guard let data = preferences.data(forKey: "personalization"),
               let value = try? JSONDecoder().decode(Self.self, from: data),
-              value.background.valid, value.progress.valid, value.completion.valid else { return Self() }
+              value.background.valid, value.progress.valid, value.completion.valid,
+              value.backgroundOpacity.isFinite, (0...1).contains(value.backgroundOpacity) else { return Self() }
         return value
     }
     func save(to preferences: UserDefaults) {
         if let data = try? JSONEncoder().encode(self) { preferences.set(data, forKey: "personalization") }
+    }
+}
+extension PersonalizationSettings {
+    enum CodingKeys: String, CodingKey { case layout, progressStyle, openMode, background, progress, completion, backgroundOpacity }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        layout = try values.decode(TaskLayout.self, forKey: .layout)
+        progressStyle = try values.decode(TaskProgressStyle.self, forKey: .progressStyle)
+        openMode = try values.decode(TaskOpenMode.self, forKey: .openMode)
+        background = try values.decode(RGBColor.self, forKey: .background)
+        progress = try values.decode(RGBColor.self, forKey: .progress)
+        completion = try values.decode(RGBColor.self, forKey: .completion)
+        // Older installations have no opacity key; preserve their saved appearance.
+        backgroundOpacity = try values.decodeIfPresent(Double.self, forKey: .backgroundOpacity) ?? 1
     }
 }
 enum PersonalizationPreset: String, CaseIterable, Identifiable {
@@ -200,7 +217,7 @@ struct PersonalizationPreview: View {
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(settings.statusColor(project).opacity(0.25)))
                 }
             }
-        }.padding(12).background(settings.background.color).cornerRadius(14).preferredColorScheme(settings.scheme)
+        }.padding(12).background(settings.floatingBackground).cornerRadius(14).preferredColorScheme(settings.scheme)
             .accessibilityElement(children: .ignore).accessibilityLabel("效果预览，" + settings.layout.title + "，" + settings.progressStyle.title + "进度，" + settings.openMode.title)
     }
 }
@@ -240,12 +257,31 @@ struct PersonalizationView: View {
                         ColorPicker("进行中进度", selection: colorBinding(\.progress), supportsOpacity: false)
                         ColorPicker("完成提示", selection: colorBinding(\.completion), supportsOpacity: false)
                         ColorPicker("界面背景", selection: colorBinding(\.background), supportsOpacity: false)
+                        HStack {
+                            Text("界面透明度")
+                            Slider(value: Binding(get: { 1 - model.settings.backgroundOpacity }, set: { model.settings.backgroundOpacity = 1 - $0 }), in: 0...1)
+                                .accessibilityLabel("界面透明度")
+                            Text("\(Int(((1 - model.settings.backgroundOpacity) * 100).rounded()))%")
+                                .monospacedDigit().frame(width: 40, alignment: .trailing)
+                        }
+                        HStack {
+                            Button("不透明") { model.settings.backgroundOpacity = 1 }
+                            Button("半透明") { model.settings.backgroundOpacity = 0.5 }
+                            Button("透明背景") { model.settings.backgroundOpacity = 0 }
+                        }.controlSize(.small)
+                        Text("仅调整浮窗和圆球背景，任务文字与进度保持清晰。颜色和透明度会一起保存。")
+                            .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     VStack(alignment: .leading, spacing: 8) {
                         Text("打开任务的方式").font(.headline)
+                        Picker("打开位置", selection: $model.chatDestination) { ForEach(TaskChatDestination.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
                         Picker("打开任务", selection: $model.settings.openMode) { ForEach(TaskOpenMode.allCases) { Text($0.title).tag($0) } }.pickerStyle(.radioGroup).labelsHidden()
-                        Text(model.settings.openMode.help + "。右键仍可打开聊天、最小化窗口、固定任务和查看详情。")
+                        Text(model.taskClickHelp + "。每次只打开所选的一种对话框。")
                             .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                        if model.chatDestination == .builtIn {
+                            Picker("最近消息", selection: $model.recentChatCount) { ForEach([5, 10, 20], id: \.self) { Text("最近 \($0) 条").tag($0) } }.pickerStyle(.segmented)
+                            Text("仅限制内置窗口显示的消息条数，任务的完整上下文会保留。").font(.caption).foregroundColor(.secondary)
+                        }
                     }
                 }.padding(20)
             }

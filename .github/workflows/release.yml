@@ -23,6 +23,7 @@ jobs:
       - name: Check behavior and packaging
         run: |
           python3 tests/check.py
+          python3 tests/check_chat.py
           python3 tests/check_install.py
           zsh package.command --skip-build
           python3 tests/check_release.py
