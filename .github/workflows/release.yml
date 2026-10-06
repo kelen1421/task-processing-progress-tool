@@ -55,5 +55,5 @@ jobs:
           if gh release view "v$version" >/dev/null 2>&1; then
             echo "Release v$version already exists; existing downloads are preserved."
           else
-            gh release create "v$version" release/* --target "$GITHUB_SHA" --title "任务处理进度 $version" --notes-file "docs/releases/$version.md" --latest
+            gh release create "v$version" release/* --target "$GITHUB_SHA" --title "ai工作台 $version" --notes-file "docs/releases/$version.md" --latest
           fi

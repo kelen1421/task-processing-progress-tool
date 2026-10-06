@@ -1,7 +1,7 @@
 {
   "name": "task-processing-progress",
-  "version": "1.7.1",
-  "description": "将 Codex 聊天任务进度显示在屏幕右上角的个人浮窗插件。",
+  "version": "1.8.0",
+  "description": "可个性化的 macOS 桌面 AI 任务工作台，显示 Codex 聊天任务进度。",
   "author": {
     "name": "个人"
   },
@@ -12,9 +12,9 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "任务处理进度",
+    "displayName": "ai工作台",
     "shortDescription": "桌面右上角显示各聊天任务的阶段、进度和完成状态",
-    "longDescription": "小型四宫格置顶浮窗，可最小化为任务圆球，显示任务数和领先任务的环形进度，完成任务时绿色高亮。浮窗与任务对话框均可拖动调整大小并记住尺寸。每个进行中的聊天任务独占方框。显示任务标题、计划百分比或明确标注的阶段估计。任务可右键固定到任务栏或取消锁定，尚未开始的任务显示等待中。固定任务完成后仍保留；未固定的完成任务保留至点击打开聊天；右键查看进度依据。单击任务方框打开对应聊天，双击将 ChatGPT 窗口最小化到 Dock 并保留任务；首次使用需要辅助功能权限。空白卡片可选择进入已有聊天，或填写任务和项目后打开新聊天草稿。macOS 13 及以上，兼容 Apple 芯片与 Intel Mac，本地运行。",
+    "longDescription": "可个性化的桌面任务工作台，四宫格或条式列表显示 Codex 聊天任务进度，可缩成进度圆球，任务完成时高亮。支持条形、圆环、分段进度，进行中/完成/界面背景自定义颜色及四套预设方案。默认单击打开任务、双击最小化聊天窗口，也可选择单击选中、双击打开。任务可固定，完成保留至查看；空位可新建或进入任务。设置自动保存，覆盖安装自动检测旧版并保留个性化、固定任务和窗口大小。macOS 13 及以上，支持 Apple 芯片和 Intel Mac。",
     "developerName": "个人",
     "category": "Productivity",
     "capabilities": [
@@ -23,7 +23,7 @@
     "composerIcon": "./assets/icon.svg",
     "logo": "./assets/icon.svg",
     "defaultPrompt": [
-      "打开任务处理进度浮窗"
+      "打开ai工作台浮窗"
     ],
     "brandColor": "#41D5ED"
   }

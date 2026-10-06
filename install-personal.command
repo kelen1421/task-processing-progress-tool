@@ -4,11 +4,16 @@ cd "${0:A:h}"
 [[ "${1:-}" == --skip-build ]] || ./build.command
 python3 - <<'PY'
 from pathlib import Path
-import json,shutil
+import json,shutil,plistlib
 root=Path.cwd()
-shutil.copytree(root/'dist/任务处理进度.app',root/'plugin/assets/任务处理进度.app',dirs_exist_ok=True)
+def remove_legacy(folder):
+    old=folder/'assets/任务处理进度.app'
+    if old.exists() and plistlib.loads((old/'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier')=='local.codex.progress': shutil.rmtree(old)
+remove_legacy(root/'plugin')
+shutil.copytree(root/'dist/ai工作台.app',root/'plugin/assets/ai工作台.app',dirs_exist_ok=True)
 personal=Path.home()/'.codex/plugins/task-processing-progress'
 shutil.copytree(root/'plugin',personal,dirs_exist_ok=True)
+remove_legacy(personal)
 marketplace=Path.home()/'.agents/plugins/marketplace.json'
 marketplace.parent.mkdir(parents=True,exist_ok=True)
 catalog=json.loads(marketplace.read_text()) if marketplace.exists() else {'name':'local-personal','interface':{'displayName':'个人插件'},'plugins':[]}

@@ -1,14 +1,16 @@
 #!/bin/zsh
 set -euo pipefail
 cd "${0:A:h}"
-command -v codex >/dev/null || { print -u2 '未找到 Codex 命令。可以直接打开 assets 中的「任务处理进度.app」使用浮窗；安装到个人插件需要 Codex CLI。'; read -r '?按回车退出'; exit 1; }
-[[ -x 'assets/任务处理进度.app/Contents/MacOS/CodexProgress' ]] || { print -u2 '未找到插件内的浮窗应用，请重新解压完整插件包。'; exit 1; }
+command -v codex >/dev/null || { print -u2 '未找到 Codex 命令。可以直接打开 assets 中的「ai工作台.app」使用浮窗；安装到个人插件需要 Codex CLI。'; read -r '?按回车退出'; exit 1; }
+[[ -x 'assets/ai工作台.app/Contents/MacOS/CodexProgress' ]] || { print -u2 '未找到插件内的浮窗应用，请重新解压完整插件包。'; exit 1; }
 python3 - <<'PY'
 from pathlib import Path
-import json, shutil
+import json, shutil, plistlib
 root = Path.cwd()
 personal = Path.home()/'.codex/plugins/task-processing-progress'
 shutil.copytree(root, personal, dirs_exist_ok=True)
+legacy=personal/'assets/任务处理进度.app'
+if legacy.exists() and plistlib.loads((legacy/'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier')=='local.codex.progress': shutil.rmtree(legacy)
 marketplace = Path.home()/'.agents/plugins/marketplace.json'
 marketplace.parent.mkdir(parents=True, exist_ok=True)
 catalog = json.loads(marketplace.read_text()) if marketplace.exists() else {'name':'local-personal','interface':{'displayName':'个人插件'},'plugins':[]}

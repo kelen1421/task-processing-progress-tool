@@ -1,6 +1,6 @@
 import json, os, sqlite3, subprocess, tempfile
 from pathlib import Path
-binary = Path(__file__).resolve().parents[1] / 'dist/任务处理进度.app/Contents/MacOS/CodexProgress'
+binary = Path(__file__).resolve().parents[1] / 'dist/ai工作台.app/Contents/MacOS/CodexProgress'
 with tempfile.TemporaryDirectory() as root:
     db = sqlite3.connect(Path(root) / 'state_5.sqlite')
     db.execute('CREATE TABLE threads(id,title,cwd,rollout_path,archived,agent_role,source,updated_at,name,project_id)')
@@ -59,3 +59,4 @@ subprocess.run([str(binary),'--selfcheck-pinning'], check=True)
 
 subprocess.run([str(binary),'--selfcheck-window-actions'], check=True)
 subprocess.run([str(binary),'--selfcheck-permissions'], check=True)
+subprocess.run([str(binary),'--selfcheck-personalization'], check=True)

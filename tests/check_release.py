@@ -22,6 +22,8 @@ for kind in ['macos-universal', 'codex-plugin']:
         info = plistlib.loads(package.read(bundle + 'Contents/Info.plist'))
         assert info['CFBundleShortVersionString'] == version
         assert info['CFBundleIdentifier'] == 'local.codex.progress'
+        assert info['CFBundleDisplayName'] == 'ai工作台'
+        assert '任务处理进度.app/' not in '\n'.join(names), 'The old application must not be bundled alongside its replacement'
         mode = package.getinfo(bundle + app_binary).external_attr >> 16
         assert mode & stat.S_IXUSR, 'Application executable bit must survive ZIP extraction'
         if kind == 'codex-plugin':
@@ -30,6 +32,9 @@ for kind in ['macos-universal', 'codex-plugin']:
             assert manifest['version'] == version
             assert prefix + '安装个人插件.command' in names
             assert prefix + '.codex-plugin/plugin.json' in names
+        else:
+            installer = names[0].split('/')[0] + '/安装或更新.command'
+            assert installer in names and (package.getinfo(installer).external_attr >> 16) & stat.S_IXUSR
         with tempfile.TemporaryDirectory() as temporary:
             subprocess.run(['ditto', '-x', '-k', str(archive), temporary], check=True)
             app = Path(temporary) / bundle

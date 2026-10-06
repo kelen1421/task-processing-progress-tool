@@ -313,6 +313,9 @@ final class Model: ObservableObject {
     @Published var selected = "全部项目"
     @Published var collapsed = false
     @Published var refreshed = Date()
+    @Published var selectedTaskID: String?
+    @Published var guideStep: GuideStep?
+    @Published var settings: PersonalizationSettings { didSet { settings.save(to: preferences) } }
     @Published private var dismissed: Set<String>
     @Published private(set) var pinnedTaskIDs: [String]
     private var busy = false
@@ -321,6 +324,7 @@ final class Model: ObservableObject {
     let trackingSince: Date
     init(reader: Reader = Reader(root: ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory() + "/.codex"), preferences: UserDefaults = .standard, now: Date = Date()) {
         self.reader = reader; self.preferences = preferences
+        self.settings = PersonalizationSettings.load(from: preferences)
         self.collapsed = preferences.bool(forKey: "orbMode")
         self.dismissed = Set(preferences.stringArray(forKey: "dismissedCompletions") ?? [])
         self.pinnedTaskIDs = (preferences.stringArray(forKey: "pinnedTasks") ?? []).reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
@@ -330,6 +334,11 @@ final class Model: ObservableObject {
     func acknowledge(_ project: ProjectRow) {
         for row in project.tasks { if let key = row.completionKey { dismissed.insert(key) } }
         preferences.set(Array(dismissed), forKey: "dismissedCompletions")
+    }
+    func applyPreset(_ preset: PersonalizationPreset) {
+        let mode = settings.openMode
+        var updated = preset.settings; updated.openMode = mode
+        settings = updated
     }
     func isPinned(_ id: String) -> Bool { pinnedTaskIDs.contains(id) }
     func togglePin(_ id: String) {
@@ -341,8 +350,15 @@ final class Model: ObservableObject {
         row.state == "本轮结束" && (row.completedAt ?? .distantPast) >= trackingSince && row.completionKey.map { !dismissed.contains($0) } == true
     }
     var pendingCompletionIDs: Set<String> { Set(rows.filter(isPendingCompletion).map(\.id)) }
+    func displayRow(_ row: TaskRow) -> TaskRow {
+        guard isPinned(row.id), row.state == "本轮结束", let key = row.completionKey, dismissed.contains(key) else { return row }
+        var waiting = row
+        waiting.state = "等待中"; waiting.steps = []; waiting.progress = ProgressEvidence()
+        waiting.detail = "上一轮已查看，等待新任务开始。"
+        return waiting
+    }
     func card(for row: TaskRow) -> ProjectRow {
-        ProjectRow(id: row.id, tasks: [row], pinned: isPinned(row.id), completionPending: isPendingCompletion(row))
+        ProjectRow(id: row.id, tasks: [displayRow(row)], pinned: isPinned(row.id), completionPending: isPendingCompletion(row))
     }
     var projects: [SidebarProject] {
         var result = sidebarProjects
@@ -358,7 +374,7 @@ final class Model: ObservableObject {
         if let aPin = aPin, let bPin = bPin { return aPin < bPin }
         if (aPin != nil) != (bPin != nil) { return aPin != nil }
         if (a.state == "运行中") != (b.state == "运行中") { return a.state == "运行中" }; return a.updated > b.updated
-    } }
+    }.map(displayRow) }
     func refresh() {
         guard !busy else { return }; busy = true
         let pins = pinnedTaskIDs
@@ -437,7 +453,7 @@ struct TaskOrb: View {
     @State private var dragFrame: NSRect?
     @State private var dragMouse: NSPoint?
     var summary: TaskOrbSummary { TaskOrbSummary(rows: model.visible, pendingCompletionIDs: model.pendingCompletionIDs) }
-    var accent: Color { model.error != nil ? .orange : summary.hasCompletion ? .green : summary.runningCount > 0 ? .cyan : .gray }
+    var accent: Color { model.error != nil ? .orange : summary.hasCompletion ? model.settings.completion.color : summary.runningCount > 0 ? model.settings.progress.color : model.settings.waiting }
     var idleCaption: String {
         if model.error != nil { return "读取异常" }
         if summary.runningCount == 0 && summary.waitingCount > 0 { return "等待中" }
@@ -446,22 +462,22 @@ struct TaskOrb: View {
     }
     var body: some View {
         ZStack {
-            Circle().fill(summary.hasCompletion ? Color(red: 0.08, green: 0.18, blue: 0.13) : Color(red: 0.065, green: 0.08, blue: 0.12))
+            Circle().fill(model.settings.background.color)
             Circle().stroke(accent.opacity(summary.hasCompletion ? 0.45 : 0.16), lineWidth: 1)
             if summary.hasCompletion {
                 TimelineView(.animation(minimumInterval: 0.1, paused: reduceMotion)) { timeline in
                     let glow = reduceMotion ? 0.65 : 0.5 + 0.25 * sin(timeline.date.timeIntervalSinceReferenceDate * .pi / 1.2)
-                    Circle().stroke(Color.green.opacity(glow), lineWidth: 1).shadow(color: .green.opacity(glow), radius: 4)
+                    Circle().stroke(model.settings.completion.color.opacity(glow), lineWidth: 1).shadow(color: model.settings.completion.color.opacity(glow), radius: 4)
                 }.allowsHitTesting(false)
             }
-            Circle().stroke(Color.white.opacity(0.1), lineWidth: 3)
+            Circle().stroke(model.settings.track, lineWidth: 3)
             Circle().trim(from: 0, to: CGFloat(summary.percent) / 100)
                 .stroke(accent, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
                 .animation(.easeInOut(duration: 0.3), value: summary.percent)
             VStack(spacing: 1) {
-                Text("\(summary.taskCount)").font(.system(size: 17, weight: .semibold)).monospacedDigit().foregroundColor(.white)
+                Text("\(summary.taskCount)").font(.system(size: 17, weight: .semibold)).monospacedDigit().foregroundColor(model.settings.foreground)
                 if summary.hasCompletion {
-                    Text("\(summary.completedCount) 已完成").font(.system(size: 7, weight: .medium)).foregroundColor(.green)
+                    Text("\(summary.completedCount) 已完成").font(.system(size: 7, weight: .medium)).foregroundColor(model.settings.completion.color)
                 } else {
                     Text(idleCaption).font(.system(size: 7)).foregroundColor(.secondary)
                 }
@@ -476,35 +492,39 @@ struct TaskOrb: View {
                 }.onEnded { _ in dragFrame = nil; dragMouse = nil })
             .help(model.error ?? summary.description)
             .accessibilityElement(children: .ignore).accessibilityAddTraits(.isButton)
-            .accessibilityLabel("任务处理进度圆球，" + summary.description)
+            .accessibilityLabel("ai工作台圆球，" + summary.description)
             .accessibilityAction { AppDelegate.shared.setOrbMode(false) }
             .contextMenu {
                 Button("展开任务浮窗") { AppDelegate.shared.setOrbMode(false) }
                 Button("新建 / 进入任务") { AppDelegate.shared.showTaskChooser() }
+                Button("个性化设置") { AppDelegate.shared.showPersonalization() }
+                Button("使用指引") { AppDelegate.shared.showGuide() }
                 Button("移回右上角") { AppDelegate.shared.position() }
             }
     }
 }
 struct CompactProgressBar: View {
     var percent: Int
-    var completed = false
+    var color: Color = .cyan
+    var track: Color = .white.opacity(0.09)
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.09))
-                Capsule().fill(completed ? Color.green : Color.cyan).frame(width: geo.size.width * Double(percent) / 100)
+                Capsule().fill(track)
+                Capsule().fill(color).frame(width: geo.size.width * Double(min(100, max(0, percent))) / 100)
             }
         }.frame(height: 6).accessibilityHidden(true)
     }
 }
 struct ProjectDetails: View {
     var project: ProjectRow
+    var settings = PersonalizationSettings()
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text(project.name).font(.headline)
-                Text(project.phaseLabel).font(.subheadline).foregroundColor(project.statusColor)
-                if project.running || project.completed { ProgressView(value: Double(project.percent), total: 100).tint(project.statusColor) }
+                Text(project.phaseLabel).font(.subheadline).foregroundColor(settings.statusColor(project))
+                if project.running || project.completed { ProgressView(value: Double(project.percent), total: 100).tint(settings.statusColor(project)) }
                 Text(project.remaining).font(.caption)
                 if project.running {
                     Text(project.hasPlan ? "百分比为已完成计划步骤占比，步骤工作量可能不同。" : "阶段位置估计：准备 10%、实现 45%、验证 75%、收尾 90%。依据：\(project.evidence.reason)。这不是实际工作量完成率；验证后可能返回修改，无法据此预测剩余时间。")
@@ -529,7 +549,7 @@ struct ProjectDetails: View {
                     Divider()
                 }
             }.padding(16)
-        }.frame(width: 320, height: 340).preferredColorScheme(.dark)
+        }.frame(width: 320, height: 340).background(settings.background.color).preferredColorScheme(settings.scheme)
     }
 }
 struct TaskPinMenu: View {
@@ -552,49 +572,39 @@ struct ProjectCard: View {
     var accessibleProgress: String { project.running || project.completed ? project.phaseLabel + "，" + project.progressLabel : project.progressLabel }
     func openChat() {
         guard let id = project.tasks.first?.id, let url = URL(string: "codex://threads/" + id), openChatURL(url) else { openFailed = true; return }
+        model.selectedTaskID = project.id
         if project.completed { model.acknowledge(project) }
     }
+    func performClick(_ count: Int) {
+        switch model.settings.openMode.action(clickCount: count) {
+        case .open: openChat()
+        case .select: model.selectedTaskID = project.id
+        case .minimize: onDoubleClick()
+        }
+    }
     var body: some View {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .top, spacing: 3) {
-                    Text(project.name).font(.system(size: 11, weight: .semibold)).lineLimit(2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true).help(project.name)
-                    if project.pinned { Spacer(minLength: 0); Image(systemName: "pin.fill").font(.system(size: 8)).foregroundColor(.orange).help("已固定到任务栏") }
-                }
-                Spacer(minLength: 0)
-                if project.running || project.completed {
-                    HStack(spacing: 5) {
-                        Circle().fill(project.statusColor).frame(width: 5, height: 5)
-                        Text(project.phaseLabel).font(.system(size: 9)).lineLimit(1).foregroundColor(.secondary)
-                        Spacer(minLength: 0)
-                    }
-                    HStack(spacing: 6) {
-                        CompactProgressBar(percent: project.percent, completed: project.completed)
-                        Text(project.progressLabel)
-                            .font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundColor(project.statusColor)
-                            .help(project.completed ? project.pinned ? "本轮任务已结束，点击查看；已固定任务会保留。" : "本轮任务已结束，点击移除卡片" : project.hasPlan ? "已完成计划步骤占比" : "阶段位置估计，不是工作量完成率")
-                    }
-                } else {
-                    Text(project.progressLabel).font(.system(size: 9)).foregroundColor(project.statusColor)
-                        .frame(maxWidth: .infinity).padding(.vertical, 2).background(Capsule().fill(Color.white.opacity(0.06)))
-                }
-                Text(project.remaining).font(.system(size: 8)).foregroundColor(.secondary).lineLimit(1)
-            }.padding(8).frame(maxWidth: .infinity).frame(height: height)
-                .background(Color.white.opacity(0.055)).cornerRadius(14)
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(project.statusColor.opacity(0.22), lineWidth: 1))
+            TaskCardContent(project: project, settings: model.settings, height: height)
+                .background(model.settings.cardBackground).cornerRadius(14)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(model.selectedTaskID == project.id ? model.settings.progress.color : model.settings.statusColor(project).opacity(0.22), lineWidth: model.selectedTaskID == project.id ? 2 : 1))
                 .contentShape(RoundedRectangle(cornerRadius: 14))
             .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { gesture in
                 switch gesture {
-                case .first: onDoubleClick()
-                case .second: openChat()
+                case .first: performClick(2)
+                case .second: performClick(1)
                 }
             })
             .accessibilityElement(children: .ignore).accessibilityAddTraits(.isButton)
             .accessibilityLabel("\(project.name)，\(project.pinned ? "已锁定，" : "")\(accessibleProgress)，\(project.remaining)，打开聊天")
             .accessibilityAction { openChat() }
             .accessibilityAction(named: Text("最小化 ChatGPT 窗口")) { onDoubleClick() }
-            .help("单击打开任务聊天，双击将 ChatGPT 窗口最小化到 Dock")
-            .contextMenu { TaskPinMenu(model: model, id: project.id); Divider(); Button("查看进度详情") { showingDetails = true } }
-            .popover(isPresented: $showingDetails, arrowEdge: .leading) { ProjectDetails(project: project) }
+            .help(model.settings.openMode.help)
+            .contextMenu {
+                Button("打开任务聊天") { openChat() }
+                TaskPinMenu(model: model, id: project.id)
+                Button("最小化聊天窗口") { onDoubleClick() }
+                Divider(); Button("查看进度详情") { showingDetails = true }
+            }
+            .popover(isPresented: $showingDetails, arrowEdge: .leading) { ProjectDetails(project: project, settings: model.settings) }
             .alert("未能打开聊天", isPresented: $openFailed) { Button("确定", role: .cancel) {} } message: { Text("请确认 Codex 已安装。方框会继续保留。") }
     }
 }
@@ -626,7 +636,7 @@ struct TaskChooser: View {
     @State private var search = ""
     @State private var failure: String?
     var choices: [TaskRow] {
-        model.rows.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.project.localizedCaseInsensitiveContains(search) }.sorted {
+        model.rows.map(model.displayRow).filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.project.localizedCaseInsensitiveContains(search) }.sorted {
             if ($0.state == "运行中") != ($1.state == "运行中") { return $0.state == "运行中" }
             return $0.updated > $1.updated
         }
@@ -697,20 +707,47 @@ struct TaskChooser: View {
                 }
             }
             if let failure = failure { Text(failure).font(.caption).foregroundColor(.orange) }
-        }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity).preferredColorScheme(.dark)
+        }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity).background(model.settings.background.color).preferredColorScheme(model.settings.scheme)
             .onAppear { if model.selected != "全部项目" && model.selected != "projectless" { workspace = model.selected } }
     }
 }
 struct EmptyTaskCard: View {
     var height: CGFloat = 84
+    var settings = PersonalizationSettings()
     var body: some View {
         Button { AppDelegate.shared.showTaskChooser() } label: {
-            VStack(spacing: 6) {
-                Image(systemName: "plus.circle").font(.system(size: 18))
-                Text("新建 / 进入任务").font(.system(size: 9))
-            }.foregroundColor(Color.cyan.opacity(0.65)).frame(maxWidth: .infinity).frame(height: height)
-                .background(Color.white.opacity(0.025)).cornerRadius(14)
+            Group {
+                if settings.layout == .list {
+                    HStack(spacing: 6) { Image(systemName: "plus.circle").font(.system(size: 15)); Text("新建 / 进入任务").font(.system(size: 10)) }
+                } else {
+                    VStack(spacing: 6) { Image(systemName: "plus.circle").font(.system(size: 18)); Text("新建 / 进入任务").font(.system(size: 9)) }
+                }
+            }.foregroundColor(settings.progress.color.opacity(0.8)).frame(maxWidth: .infinity).frame(height: height)
+                .background(settings.cardBackground.opacity(0.5)).cornerRadius(14)
         }.buttonStyle(.plain).accessibilityLabel("新建任务或进入已有任务")
+    }
+}
+struct PanelMoveHandle: ViewModifier {
+    @State private var startFrame: NSRect?
+    @State private var startMouse: NSPoint?
+    func body(content: Content) -> some View {
+        content.contentShape(Rectangle()).help("拖动移动，靠屏幕边缘松开后收起")
+            .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .global)
+                .onChanged { value in
+                    if startFrame == nil {
+                        startFrame = AppDelegate.shared.panel.frame
+                        let mouse = NSEvent.mouseLocation
+                        startMouse = NSPoint(x: mouse.x - value.translation.width, y: mouse.y + value.translation.height)
+                    }
+                    if let frame = startFrame, let mouse = startMouse {
+                        let current = NSEvent.mouseLocation
+                        AppDelegate.shared.moveProgress(from: frame, translation: NSSize(width: current.x - mouse.x, height: mouse.y - current.y))
+                    }
+                }
+                .onEnded { _ in
+                    if startFrame != nil { AppDelegate.shared.endProgressMove() }
+                    startFrame = nil; startMouse = nil
+                })
     }
 }
 struct PanelResizeHandle: View {
@@ -727,47 +764,64 @@ struct PanelResizeHandle: View {
                     if startFrame == nil { startFrame = AppDelegate.shared.panel.frame }
                     if let frame = startFrame { AppDelegate.shared.resizeProgress(from: frame, translation: value.translation, leading: leading) }
                 }
-                .onEnded { _ in startFrame = nil })
+                .onEnded { _ in startFrame = nil; AppDelegate.shared.endHandleResize() })
     }
 }
 struct Dashboard: View {
     @ObservedObject var model: Model
+    var onMinimize: () -> Void = { AppDelegate.shared.minimizeChatWindow() }
+    var openChatURL: (URL) -> Bool = { NSWorkspace.shared.open($0) }
     @State private var page = 0
     var projects: [ProjectRow] { model.visible.map { model.card(for: $0) } }
     var pages: Int { max(1, (projects.count + 3) / 4) }
     var currentPage: Int { min(page, pages - 1) }
     var body: some View {
         if model.collapsed {
-            TaskOrb(model: model).preferredColorScheme(.dark).transition(.identity)
+            TaskOrb(model: model).preferredColorScheme(model.settings.scheme).transition(.identity)
         } else {
             GeometryReader { geometry in
-                let cardHeight = max(CGFloat(84), (geometry.size.height - 96) / 2)
-                VStack(alignment: .leading, spacing: 6) {
+                let grid = model.settings.layout == .grid
+                let cardHeight = max(CGFloat(grid ? 84 : 38), (geometry.size.height - (grid ? 105 : 120)) / (grid ? 2 : 4))
+                VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Image(systemName: "waveform.path.ecg").foregroundColor(.cyan)
-                        Text("任务处理进度").font(.system(size: 12, weight: .semibold))
-                        Spacer()
-                        Text("\(projects.filter { $0.running }.count) 进行中").font(.system(size: 10)).foregroundColor(.secondary)
-                        Button(action: { AppDelegate.shared.setOrbMode(true) }) { Image(systemName: "minus") }
+                        HStack {
+                            Image(systemName: "waveform.path.ecg").foregroundColor(model.settings.progress.color)
+                            Text("ai工作台").font(.system(size: 12, weight: .semibold))
+                            Spacer()
+                            Text("\(projects.filter { $0.running }.count) 进行中").font(.system(size: 10)).foregroundColor(.secondary)
+                        }.frame(maxHeight: .infinity).modifier(PanelMoveHandle())
+                        Button(action: { AppDelegate.shared.setOrbMode(true) }) {
+                            Image(systemName: "minus").font(.system(size: 12, weight: .semibold))
+                                .frame(width: 32, height: 26).contentShape(Rectangle())
+                        }
                             .buttonStyle(.plain).help("最小化为进度圆球").accessibilityLabel("最小化为进度圆球")
                             .accessibilityAction { AppDelegate.shared.setOrbMode(true) }
-                    }
-                    Picker("项目", selection: $model.selected) {
-                        Text("全部项目").tag("全部项目")
-                        ForEach(model.projects) { project in Text(project.name).tag(project.id) }
-                    }.labelsHidden().controlSize(.small).onChange(of: model.selected) { _ in page = 0 }
+                            .guideHighlight(model.guideStep == .orb)
+                    }.frame(height: 26)
+                    HStack {
+                        Picker("项目", selection: $model.selected) {
+                            Text("全部项目").tag("全部项目")
+                            ForEach(model.projects) { project in Text(project.name).tag(project.id) }
+                        }.labelsHidden().controlSize(.small).onChange(of: model.selected) { _ in page = 0 }
+                        Spacer(minLength: 0)
+                        Button { AppDelegate.shared.showPersonalization() } label: { Image(systemName: "slider.horizontal.3").frame(width: 20, height: 20) }
+                            .buttonStyle(.plain).help("个性化设置").accessibilityLabel("个性化设置")
+                            .guideHighlight(model.guideStep == .personalization)
+                        Button { AppDelegate.shared.showGuide() } label: { Image(systemName: "questionmark.circle").frame(width: 20, height: 20) }
+                            .buttonStyle(.plain).help("使用指引").accessibilityLabel("使用指引")
+                    }.guideHighlight(model.guideStep == .tasks)
                     if let error = model.error { Text(error).font(.caption2).foregroundColor(.orange).lineLimit(2) }
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: model.settings.layout.columns), spacing: 6) {
                         ForEach(0..<4, id: \.self) { slot in
                             let index = currentPage * 4 + slot
                             if index < projects.count {
                                 let project = projects[index]
-                                ProjectCard(model: model, project: project, height: cardHeight, onDoubleClick: { AppDelegate.shared.minimizeChatWindow() }).id(project.id)
+                                ProjectCard(model: model, project: project, height: cardHeight, onDoubleClick: onMinimize, openChatURL: openChatURL).id(project.id)
                             } else {
-                                EmptyTaskCard(height: cardHeight)
+                                EmptyTaskCard(height: cardHeight, settings: model.settings)
                             }
                         }
-                    }
+                    }.guideHighlight(model.guideStep == .progress || model.guideStep == .pinning || model.guideStep == .entry)
                     HStack {
                         Text("每 3 秒刷新").font(.system(size: 10)).foregroundColor(.secondary)
                         Spacer()
@@ -775,7 +829,7 @@ struct Dashboard: View {
                         Text("\(currentPage + 1)/\(pages)").font(.caption2).foregroundColor(.secondary)
                         Button { page = min(pages - 1, currentPage + 1) } label: { Image(systemName: "chevron.right") }.disabled(currentPage >= pages - 1).accessibilityLabel("下一页")
                     }.buttonStyle(.plain).padding(.horizontal, 16)
-                }.padding(10).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(Color(red: 0.065, green: 0.08, blue: 0.12)).preferredColorScheme(.dark)
+                }.padding(10).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(model.settings.background.color).preferredColorScheme(model.settings.scheme)
                     .overlay(alignment: .bottom) {
                         HStack { PanelResizeHandle(leading: true); Spacer(); PanelResizeHandle() }.padding(2)
                     }
@@ -792,12 +846,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var item: NSStatusItem!
     var timer: Timer?
     var taskChooser: NSPanel?
+    var personalizationWindow: NSWindow?
+    var guideWindow: NSWindow?
+    private var guideRestoreCollapsed = false
     var permissionWindow: NSWindow?
     let permissionStatus = AccessibilityPermissionStatus()
     var permissionNotice = PermissionNoticeState()
     var expandedSize = NSSize(width: 240, height: 268)
     let orbSize = NSSize(width: 64, height: 64)
     private var changingMode = false
+    private var animatingOrb = false
+    private var resizingFromHandle = false
+    private var movingFromHeader = false
+    private var edgeDragTimer: Timer?
+    private var ignoreEdgeMovesUntil = Date.distantPast
     let minimumProgressSize = NSSize(width: 240, height: 268)
     let minimumChooserSize = NSSize(width: 300, height: 280)
     func savedSize(_ key: String, fallback: NSSize, minimum: NSSize) -> NSSize {
@@ -824,12 +886,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         resize()
         position(); panel.orderFrontRegardless()
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "waveform.path.ecg", accessibilityDescription: "任务处理进度")
+        item.button?.image = NSImage(systemSymbolName: "waveform.path.ecg", accessibilityDescription: "ai工作台")
         let menu = NSMenu()
         menu.addItem(withTitle: "显示 / 隐藏浮窗", action: #selector(toggle), keyEquivalent: "")
         menu.addItem(withTitle: "切换圆球 / 浮窗", action: #selector(toggleOrbMode), keyEquivalent: "")
         menu.addItem(withTitle: "移回右上角", action: #selector(position), keyEquivalent: "")
         menu.addItem(withTitle: "新建 / 进入任务", action: #selector(showTaskChooser), keyEquivalent: "")
+        menu.addItem(withTitle: "个性化设置", action: #selector(showPersonalization), keyEquivalent: "")
+        menu.addItem(withTitle: "使用指引", action: #selector(showGuide), keyEquivalent: "")
         menu.addItem(withTitle: "辅助功能权限 / 修复", action: #selector(showPermissionSettings), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "退出", action: #selector(quit), keyEquivalent: "q")
@@ -840,10 +904,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         NotificationCenter.default.addObserver(self, selector: #selector(position), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         if CommandLine.arguments.contains("--show-permissions") { showPermissionSettings() }
+        if CommandLine.arguments.contains("--show-personalization") { showPersonalization() }
     }
     @objc func position() {
         guard let screen = panel?.screen ?? NSScreen.main else { return }
         let v = screen.visibleFrame
+        ignoreEdgeMovesUntil = Date().addingTimeInterval(0.2)
         panel.setFrameOrigin(NSPoint(x: v.maxX - panel.frame.width - 18, y: v.maxY - panel.frame.height - 18))
     }
     @objc func showTaskChooser() {
@@ -859,19 +925,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         chooser.center(); taskChooser = chooser
         NSApp.activate(ignoringOtherApps: true); chooser.makeKeyAndOrderFront(nil)
     }
+    @objc func showPersonalization() {
+        if let window = personalizationWindow { NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil); return }
+        let minimum = NSSize(width: 380, height: 460)
+        let size = savedSize("personalization", fallback: NSSize(width: 420, height: 610), minimum: minimum)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = "个性化设置"; window.level = .floating; window.delegate = self; window.isReleasedWhenClosed = false
+        // Keep the native color editor above the always-on-top settings window.
+        NSColorPanel.shared.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+        let content = NSHostingView(rootView: PersonalizationView(model: model, close: { [weak self] in self?.personalizationWindow?.close() }))
+        content.sizingOptions = []; window.contentView = content; window.contentMinSize = minimum
+        window.center(); personalizationWindow = window
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+    }
+    @objc func showGuide() {
+        if let window = guideWindow { NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil); return }
+        guideRestoreCollapsed = model.collapsed
+        if model.collapsed { setOrbMode(false) }
+        model.guideStep = .tasks
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 320), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = "ai工作台 · 使用指引"; window.level = .floating; window.delegate = self; window.isReleasedWhenClosed = false
+        let content = NSHostingView(rootView: GuideView(model: model, close: { [weak self] in self?.guideWindow?.close() }))
+        content.sizingOptions = []; window.contentView = content; window.contentMinSize = NSSize(width: 340, height: 300)
+        window.center()
+        if let screen = panel.screen?.visibleFrame, panel.frame.minX - 12 - window.frame.width >= screen.minX {
+            window.setFrameOrigin(NSPoint(x: panel.frame.minX - window.frame.width - 12, y: max(screen.minY, panel.frame.maxY - window.frame.height)))
+        }
+        guideWindow = window; NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+    }
     @objc func toggleOrbMode() { setOrbMode(!model.collapsed) }
-    func setOrbMode(_ compact: Bool) {
-        guard model.collapsed != compact else { return }
+    func setOrbMode(_ compact: Bool, atEdge edge: PanelDockEdge = []) {
+        guard model.collapsed != compact, !animatingOrb else { return }
+        let placement = compact && !edge.isEmpty ? (panel.screen ?? NSScreen.main).map { edge.orbFrame(panel.frame, screen: $0.visibleFrame) } : nil
         if compact {
             expandedSize = panel.frame.size
             model.preferences.set(expandedSize.width, forKey: "progressWidth")
             model.preferences.set(expandedSize.height, forKey: "progressHeight")
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                animatingOrb = true
+                let destination = placement.map { CGPoint(x: $0.midX - panel.frame.minX, y: $0.midY - panel.frame.minY) }
+                if OrbCollapseTransition.animate(panel: panel, destination: destination, completion: { [weak self] in
+                    self?.animatingOrb = false; self?.finishOrbMode(true, placement: placement)
+                }) { return }
+                animatingOrb = false
+            }
         }
+        finishOrbMode(compact, placement: placement)
+    }
+    private func finishOrbMode(_ compact: Bool, placement: NSRect? = nil) {
         model.collapsed = compact
         model.preferences.set(compact, forKey: "orbMode")
         resize()
+        if let placement = placement { panel.setFrameOrigin(placement.origin) }
     }
     func resize() {
+        ignoreEdgeMovesUntil = Date().addingTimeInterval(0.2)
         changingMode = true
         defer { changingMode = false }
         let anchor = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
@@ -935,20 +1043,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if error == nil { NSApp.terminate(nil) }
                 else {
                     let alert = NSAlert(); alert.messageText = "无法自动重启"
-                    alert.informativeText = "请退出浮窗，再重新打开「任务处理进度」。"
+                    alert.informativeText = "请退出浮窗，再重新打开「ai工作台」。"
                     alert.runModal()
                 }
             }
         }
     }
     func resizeProgress(from frame: NSRect, translation: CGSize, leading: Bool) {
-        guard !model.collapsed else { return }
+        guard !model.collapsed, !animatingOrb else { return }
+        resizingFromHandle = true; cancelEdgeDrag(); ignoreEdgeMovesUntil = Date().addingTimeInterval(0.2)
         guard let screen = (panel.screen ?? NSScreen.main)?.visibleFrame else { return }
         let width = min(screen.width, max(minimumProgressSize.width, frame.width + (leading ? -translation.width : translation.width)))
         let height = min(screen.height, max(minimumProgressSize.height, frame.height + translation.height))
         let x = min(screen.maxX - width, max(screen.minX, leading ? frame.maxX - width : frame.minX))
         let y = min(screen.maxY - height, max(screen.minY, frame.maxY - height))
         panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+    }
+    private func cancelEdgeDrag() { edgeDragTimer?.invalidate(); edgeDragTimer = nil }
+    func moveProgress(from frame: NSRect, translation: CGSize) {
+        guard !model.collapsed, !animatingOrb else { return }
+        movingFromHeader = true; cancelEdgeDrag()
+        let mouse = NSEvent.mouseLocation
+        guard let screen = (NSScreen.screens.first { $0.frame.contains(mouse) } ?? panel.screen ?? NSScreen.main)?.visibleFrame else { return }
+        panel.setFrameOrigin(NSPoint(x: min(screen.maxX - frame.width, max(screen.minX, frame.minX + translation.width)),
+                                     y: min(screen.maxY - frame.height, max(screen.minY, frame.minY - translation.height))))
+    }
+    func endProgressMove() {
+        movingFromHeader = false; cancelEdgeDrag()
+        guard !model.collapsed, !animatingOrb, let screen = (panel.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let edge = PanelDockEdge.touching(panel.frame, screen: screen)
+        if !edge.isEmpty { setOrbMode(true, atEdge: edge) }
+    }
+    func endHandleResize() { resizingFromHandle = false; cancelEdgeDrag(); ignoreEdgeMovesUntil = Date().addingTimeInterval(0.2) }
+    func windowWillStartLiveResize(_ notification: Notification) { cancelEdgeDrag() }
+    func windowDidEndLiveResize(_ notification: Notification) { cancelEdgeDrag(); ignoreEdgeMovesUntil = Date().addingTimeInterval(0.2) }
+    func windowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === panel,
+              !model.collapsed, !changingMode, !animatingOrb, !resizingFromHandle, !movingFromHeader,
+              !panel.inLiveResize, Date() >= ignoreEdgeMovesUntil, edgeDragTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.06, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            guard NSEvent.pressedMouseButtons & 1 == 0 else { return }
+            self.cancelEdgeDrag()
+            guard !self.model.collapsed, !self.animatingOrb, !self.resizingFromHandle, !self.panel.inLiveResize,
+                  let screen = (self.panel.screen ?? NSScreen.main)?.visibleFrame else { return }
+            let edge = PanelDockEdge.touching(self.panel.frame, screen: screen)
+            if !edge.isEmpty { self.setOrbMode(true, atEdge: edge) }
+        }
+        edgeDragTimer = timer; RunLoop.main.add(timer, forMode: .common)
     }
     func windowDidResize(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
@@ -959,14 +1101,138 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else if window === taskChooser, let size = window.contentView?.bounds.size {
             model.preferences.set(size.width, forKey: "chooserWidth")
             model.preferences.set(size.height, forKey: "chooserHeight")
+        } else if window === personalizationWindow, let size = window.contentView?.bounds.size {
+            model.preferences.set(size.width, forKey: "personalizationWidth")
+            model.preferences.set(size.height, forKey: "personalizationHeight")
         }
     }
     func windowWillClose(_ notification: Notification) {
         if let window = notification.object as? NSWindow, window === taskChooser { taskChooser = nil }
         if let window = notification.object as? NSWindow, window === permissionWindow { permissionWindow = nil }
+        if let window = notification.object as? NSWindow, window === personalizationWindow { personalizationWindow = nil }
+        if let window = notification.object as? NSWindow, window === guideWindow {
+            guideWindow = nil; model.guideStep = nil
+            if guideRestoreCollapsed { setOrbMode(true) }; guideRestoreCollapsed = false
+        }
     }
     @objc func toggle() { if panel.isVisible { panel.orderOut(nil) } else { panel.orderFrontRegardless() } }
     @objc func quit() { NSApp.terminate(nil) }
+}
+if CommandLine.arguments.contains("--selfcheck-installation") {
+    func checkInstallation() throws {
+    let manager = FileManager.default
+    let root = manager.temporaryDirectory.appendingPathComponent("ai-workbench-install-test-" + UUID().uuidString)
+    let user = root.appendingPathComponent("user"), system = root.appendingPathComponent("system")
+    try manager.createDirectory(at: system, withIntermediateDirectories: true)
+    defer { try? manager.removeItem(at: root) }
+    var stops: [String] = []
+    func install() throws -> URL { try AppInstallation.install(source: Bundle.main.bundleURL, userApplications: user, systemApplications: system, stop: { stops.append($0?.path ?? "all") }) }
+    let target = try install()
+    precondition(target.path == user.appendingPathComponent(AppInstallation.currentName).path && AppInstallation.verified(target), "The installed app must have the expected path and a valid signature")
+    precondition(stops.count == 2)
+    let unchanged = try Data(contentsOf: target.appendingPathComponent(AppInstallation.binary))
+    stops = []; _ = try install()
+    precondition(stops == [target.path], "Identical installations must reuse the signed app")
+    let reused = try Data(contentsOf: target.appendingPathComponent(AppInstallation.binary))
+    precondition(reused == unchanged)
+    let suite = "local.codex.progress.install.test." + UUID().uuidString
+    let preferences = UserDefaults(suiteName: suite)!
+    defer { preferences.removePersistentDomain(forName: suite) }
+    let model = Model(preferences: preferences)
+    model.settings = PersonalizationPreset.violet.settings; model.settings.openMode = .double
+    model.togglePin("fixture-pin"); preferences.set(310.0, forKey: "progressWidth")
+    let settings = model.settings
+    let legacy = user.appendingPathComponent(AppInstallation.legacyName)
+    try manager.moveItem(at: target, to: legacy)
+    _ = try install()
+    precondition(!manager.fileExists(atPath: legacy.path) && manager.fileExists(atPath: target.path), "Rename upgrades must replace the old app, without duplicates")
+    let restored = Model(preferences: preferences)
+    precondition(restored.settings == settings && restored.isPinned("fixture-pin") && preferences.double(forKey: "progressWidth") == 310)
+    try manager.moveItem(at: target, to: system.appendingPathComponent(AppInstallation.legacyName))
+    let systemTarget = try install()
+    precondition(systemTarget.path == system.appendingPathComponent(AppInstallation.currentName).path, "System-wide installations keep their location")
+    var metadata = AppInstallation.info(systemTarget)!
+    metadata["CFBundleShortVersionString"] = "99.0.0"
+    let plist = systemTarget.appendingPathComponent("Contents/Info.plist")
+    try PropertyListSerialization.data(fromPropertyList: metadata, format: .xml, options: 0).write(to: plist)
+    precondition(AppInstallation.run("/usr/bin/codesign", ["--force", "--sign", "-", systemTarget.path]))
+    _ = try install()
+    precondition(AppInstallation.version(systemTarget) == [99, 0, 0], "Old installers must not downgrade a valid newer app")
+    let invalidPlist = try Data(contentsOf: plist) + Data("\n".utf8)
+    try invalidPlist.write(to: plist)
+    _ = try install()
+    precondition(AppInstallation.same(Bundle.main.bundleURL, systemTarget), "A corrupt bundle must be repaired")
+    let unrelated = user.appendingPathComponent(AppInstallation.currentName)
+    try manager.copyItem(at: systemTarget, to: unrelated)
+    metadata["CFBundleIdentifier"] = "fixture.unrelated"
+    try PropertyListSerialization.data(fromPropertyList: metadata, format: .xml, options: 0).write(to: unrelated.appendingPathComponent("Contents/Info.plist"))
+    try manager.moveItem(at: systemTarget, to: root.appendingPathComponent("saved.app"))
+    do { _ = try install(); preconditionFailure("An unrelated destination must never be replaced") }
+    catch AppInstallationError.unrelatedDestination {}
+    precondition(AppInstallation.info(unrelated)?["CFBundleIdentifier"] as? String == "fixture.unrelated")
+    print("PASS: native installer, repeat-install identity, legacy rename, location preservation, settings/pins/size migration, downgrade protection, corrupt-bundle repair and unrelated-app protection")
+    }
+    try checkInstallation()
+    exit(0)
+}
+if CommandLine.arguments.contains("--install-app") {
+    do { print(try AppInstallation.install(source: Bundle.main.bundleURL).path); exit(0) }
+    catch { FileHandle.standardError.write(Data(("无法安装 ai工作台：" + error.localizedDescription + "\n").utf8)); exit(1) }
+}
+if CommandLine.arguments.contains("--selfcheck-personalization") {
+    let suite = "local.codex.progress.personalization.test." + UUID().uuidString
+    let preferences = UserDefaults(suiteName: suite)!
+    defer { preferences.removePersistentDomain(forName: suite) }
+    let now = Date()
+    let model = Model(preferences: preferences, now: now)
+    precondition(model.settings == PersonalizationSettings(), "Existing users keep the original layout and click mode")
+    model.togglePin("done")
+    model.preferences.set(320.0, forKey: "progressWidth")
+    model.settings.openMode = .double
+    for preset in PersonalizationPreset.allCases {
+        model.applyPreset(preset)
+        precondition(preset.matches(model.settings) && model.settings.openMode == .double, "Appearance presets must keep the user's click mode")
+        let restored = Model(preferences: preferences)
+        precondition(restored.settings == model.settings && restored.isPinned("done"))
+        precondition(preferences.double(forKey: "progressWidth") == 320, "Appearance changes must keep pins and panel size")
+    }
+    model.settings.progress = RGBColor(hex: 0x123ABC)
+    model.settings.background = RGBColor(hex: 0xFAFAFA)
+    model.settings.completion = RGBColor(hex: 0x385B3E)
+    model.settings.layout = .list; model.settings.progressStyle = .segments
+    precondition(Model(preferences: preferences).settings == model.settings && model.settings.scheme == .light)
+    model.settings.background = RGBColor(hex: 0x101010)
+    precondition(model.settings.scheme == .dark)
+    precondition(TaskOpenMode.single.action(clickCount: 1) == .open && TaskOpenMode.single.action(clickCount: 2) == .minimize)
+    precondition(TaskOpenMode.double.action(clickCount: 1) == .select && TaskOpenMode.double.action(clickCount: 2) == .open)
+    var done = TaskRow(id: "done", title: "完成测试", project: "fixture", path: "", state: "本轮结束")
+    done.completionKey = "done:turn1"; done.completedAt = now.addingTimeInterval(1)
+    model.rows = [done]
+    var opens = 0, minimizes = 0
+    var card = ProjectCard(model: model, project: model.card(for: done), onDoubleClick: { minimizes += 1 }, openChatURL: { _ in opens += 1; return true })
+    model.settings.openMode = .single
+    card.performClick(2)
+    precondition(minimizes == 1 && opens == 0 && model.isPendingCompletion(done), "Original double click only minimizes and preserves completion")
+    card.performClick(1)
+    precondition(opens == 1 && !model.isPendingCompletion(done) && model.visible.count == 1)
+    done.completionKey = "done:turn2"; done.completedAt = now.addingTimeInterval(2); model.rows = [done]
+    card = ProjectCard(model: model, project: model.card(for: done), onDoubleClick: { minimizes += 1 }, openChatURL: { _ in opens += 1; return true })
+    model.settings.openMode = .double
+    card.performClick(1)
+    precondition(model.selectedTaskID == done.id && opens == 1 && minimizes == 1 && model.isPendingCompletion(done), "Selection must not open, minimize or acknowledge")
+    card.performClick(2)
+    precondition(opens == 2 && minimizes == 1 && !model.isPendingCompletion(done) && model.isPinned(done.id))
+    model.settings = PersonalizationSettings()
+    precondition(Model(preferences: preferences).settings == PersonalizationSettings() && model.isPinned(done.id))
+    preferences.set(Data("invalid-json".utf8), forKey: "personalization")
+    precondition(Model(preferences: preferences).settings == PersonalizationSettings())
+    let invalid = PersonalizationSettings()
+    var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(invalid)) as! [String: Any]
+    json["progress"] = ["red": 2, "green": 0, "blue": 0]
+    preferences.set(try JSONSerialization.data(withJSONObject: json), forKey: "personalization")
+    precondition(Model(preferences: preferences).settings == PersonalizationSettings(), "Invalid color data must fall back safely")
+    print("PASS: settings persistence, preset combinations, color contrast, independent click mode, single/double actions, completion retention, pin preservation, reset and invalid-data recovery")
+    exit(0)
 }
 if CommandLine.arguments.contains("--selfcheck-permissions") {
     var notice = PermissionNoticeState()
@@ -976,7 +1242,7 @@ if CommandLine.arguments.contains("--selfcheck-permissions") {
     precondition(notice.shouldPresent(authorized: false, explicitlyRequested: true), "The repair entry must stay available after dismissing the first notice")
     precondition(!notice.shouldPresent(authorized: false))
     var granted = false
-    let status = AccessibilityPermissionStatus(applicationPath: "/fixture/任务处理进度.app", check: { granted })
+    let status = AccessibilityPermissionStatus(applicationPath: "/fixture/ai工作台.app", check: { granted })
     precondition(!status.authorized)
     granted = true; status.refresh(); notice.observe(authorized: status.authorized)
     precondition(status.authorized && !notice.shouldPresent(authorized: true), "Grant detection must enable the next operation without another prompt")
@@ -1028,6 +1294,9 @@ if CommandLine.arguments.contains("--selfcheck-pinning") {
     model.togglePin(done.id)
     model.acknowledge(model.card(for: done))
     precondition(model.visible.contains { $0.id == done.id }, "Viewed pinned completion must remain on the taskbar")
+    precondition(model.card(for: done).waiting && model.visible.first { $0.id == done.id }?.state == "等待中", "Viewed pinned completion must reset its displayed progress to waiting")
+    let restarted = Model(preferences: preferences, now: now); restarted.rows = [done]
+    precondition(restarted.visible.first?.state == "等待中" && restarted.card(for: done).percent == 0, "The waiting state must survive refresh and restart")
     var orb = TaskOrbSummary(rows: model.visible, pendingCompletionIDs: model.pendingCompletionIDs)
     precondition(!orb.hasCompletion && orb.reference?.id == running.id, "Viewed pinned completion must stop highlighting and not replace active progress")
     model.togglePin(done.id)
@@ -1044,6 +1313,12 @@ if CommandLine.arguments.contains("--selfcheck-pinning") {
     precondition(orb.hasCompletion && orb.percent == 100)
     model.acknowledge(model.card(for: waiting))
     precondition(model.visible.count == 1 && !TaskOrbSummary(rows: model.visible, pendingCompletionIDs: model.pendingCompletionIDs).hasCompletion)
+    precondition(model.card(for: waiting).waiting && TaskOrbSummary(rows: model.visible, pendingCompletionIDs: model.pendingCompletionIDs).waitingCount == 1)
+    waiting.state = "运行中"; waiting.steps = []; waiting.progress.stage = .prepare; model.rows = [waiting]
+    precondition(model.card(for: waiting).running && model.card(for: waiting).percent == 10, "A new turn must leave waiting and use its fresh progress")
+    waiting.state = "本轮结束"; waiting.completionKey = "waiting:turn2"; waiting.completedAt = now.addingTimeInterval(3); model.rows = [waiting]
+    precondition(model.card(for: waiting).completed && model.isPendingCompletion(waiting), "A new completion must show 100% and highlight again")
+    model.acknowledge(model.card(for: waiting))
     model.togglePin(waiting.id)
     precondition(model.visible.isEmpty && !Model(preferences: preferences).isPinned(waiting.id))
     var unreadable = TaskRow(id: "unreadable", title: "记录异常", project: "甲", path: "/fixture", projectKey: "p1", state: "记录不可读")
@@ -1106,6 +1381,25 @@ if CommandLine.arguments.contains("--selfcheck-orb") {
     done.completionKey = "done:turn2"; done.completedAt = now.addingTimeInterval(2)
     model.rows = [done]
     precondition(TaskOrbSummary(rows: model.visible).hasCompletion, "A later completion must highlight again")
+
+    let screen = NSRect(x: -1280, y: -200, width: 1280, height: 900)
+    for (frame, expected) in [
+        (NSRect(x: -1278, y: 0, width: 240, height: 268), PanelDockEdge.left),
+        (NSRect(x: -242, y: 0, width: 240, height: 268), PanelDockEdge.right),
+        (NSRect(x: -800, y: 430, width: 240, height: 268), PanelDockEdge.top),
+        (NSRect(x: -800, y: -198, width: 240, height: 268), PanelDockEdge.bottom),
+        (NSRect(x: -1300, y: 450, width: 240, height: 268), PanelDockEdge([.left, .top]))
+    ] {
+        let edge = PanelDockEdge.touching(frame, screen: screen)
+        precondition(edge == expected)
+        let orb = edge.orbFrame(frame, screen: screen)
+        precondition(screen.contains(orb) && orb.size == NSSize(width: 64, height: 64), "Edge docking must keep the orb visible on any display")
+        if edge.contains(.left) { precondition(orb.minX == screen.minX + 4) }
+        if edge.contains(.right) { precondition(orb.maxX == screen.maxX - 4) }
+        if edge.contains(.top) { precondition(orb.maxY == screen.maxY - 4) }
+        if edge.contains(.bottom) { precondition(orb.minY == screen.minY + 4) }
+    }
+    precondition(PanelDockEdge.touching(NSRect(x: -258, y: 414, width: 240, height: 268), screen: screen).isEmpty, "The normal upper-right placement must not auto-collapse")
 
     let application = NSApplication.shared
     application.setActivationPolicy(.accessory)
