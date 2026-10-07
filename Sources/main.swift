@@ -44,7 +44,7 @@ struct AccessibilityPermissionView: View {
             }
             Label(status.authorized ? "辅助功能权限已生效" : "辅助功能权限尚未生效", systemImage: status.authorized ? "checkmark.circle.fill" : "lock.circle")
                 .font(.headline).foregroundColor(status.authorized ? .green : .primary)
-            Text(status.authorized ? "可以关闭此窗口，再双击任务方框最小化聊天窗口。" : "系统设置中的开关开启后，这里会自动检测。若开关已开启却仍未生效，请删除旧的同名条目，再点 + 添加下面这份应用并开启权限。")
+            Text(status.authorized ? "可以关闭此窗口。右键任务方框，选择“最小化聊天窗口”；未开启双击打开时，也可双击最小化。" : "系统设置中的开关开启后，这里会自动检测。若开关已开启却仍未生效，请删除旧的同名条目，再点 + 添加下面这份应用并开启权限。")
                 .fixedSize(horizontal: false, vertical: true)
             Text("当前运行的应用").font(.caption).foregroundColor(.secondary)
             Text(status.applicationPath).font(.caption).textSelection(.enabled)
@@ -953,7 +953,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         NotificationCenter.default.addObserver(self, selector: #selector(position), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
-        let configurePermissions = PermissionVersionConfiguration.shouldConfigure(version: version, preferences: model.preferences)
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        let configurePermissions = PermissionVersionConfiguration.shouldConfigure(version: version + ":" + build, preferences: model.preferences)
         if configurePermissions { permissionStatus.upgradeVersion = version }
         if configurePermissions || CommandLine.arguments.contains("--show-permissions") { showPermissionSettings() }
         if CommandLine.arguments.contains("--show-personalization") { showPersonalization() }
@@ -1063,7 +1064,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .failed:
             let alert = NSAlert()
             alert.messageText = "暂时无法最小化 ChatGPT 窗口"
-            alert.informativeText = "辅助功能权限已开启，但未能操作聊天窗口。请关闭聊天中的弹窗，再双击一次；也可从菜单栏的“辅助功能权限 / 修复”检查当前应用。"
+            alert.informativeText = "辅助功能权限已开启，但未能操作聊天窗口。请关闭聊天中的弹窗，再试一次；也可从个性化或菜单栏的“辅助功能权限 / 修复”检查当前应用。"
             alert.addButton(withTitle: "确定")
             NSApp.activate(ignoringOtherApps: true); alert.runModal()
         }
@@ -1363,6 +1364,8 @@ if CommandLine.arguments.contains("--selfcheck-permissions") {
     precondition(!PermissionVersionConfiguration.shouldConfigure(version: "1.9.3", preferences: preferences), "Relaunching the same version must not repeat the upgrade flow")
     precondition(PermissionVersionConfiguration.shouldConfigure(version: "1.9.4", preferences: preferences), "Every new version must start configuration once")
     precondition(!PermissionVersionConfiguration.shouldConfigure(version: "1.9.4", preferences: preferences))
+    precondition(PermissionVersionConfiguration.shouldConfigure(version: "1.9.4:2", preferences: preferences), "A new build must also restart configuration")
+    precondition(!PermissionVersionConfiguration.shouldConfigure(version: "1.9.4:2", preferences: preferences))
     precondition(preferences.stringArray(forKey: "pinnedTasks") == ["fixture-pin"], "Permission configuration must not reset task preferences")
     var notice = PermissionNoticeState()
     var presentations = 0
