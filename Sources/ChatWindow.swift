@@ -144,7 +144,6 @@ final class BuiltInChatController: NSObject, NSWindowDelegate {
     let model: Model
     let service: ChatService
     private var windows: [String: NSWindow] = [:]
-    private var lastSession: ChatSession?
     private var refreshTimer: Timer?
     init(model: Model, service: ChatService? = nil) {
         self.model = model; self.service = service ?? ChatService(model: model); super.init()
@@ -153,7 +152,6 @@ final class BuiltInChatController: NSObject, NSWindowDelegate {
     func open(_ row: TaskRow) { let session = service.session(for: row); show(session); service.load(session) }
     func newTask(prompt: String, workspace: String) { let session = service.newSession(workspace: workspace, prompt: prompt); show(session); service.connect() }
     func show(_ session: ChatSession, activate: Bool = true) {
-        lastSession = session
         if let window = windows[session.id] {
             if window.isMiniaturized { window.deminiaturize(nil) }
             if activate { NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil) }
@@ -178,7 +176,19 @@ final class BuiltInChatController: NSObject, NSWindowDelegate {
         let url = session.threadID.flatMap { URL(string: "codex://threads/" + $0) } ?? ChatLink.newTask(prompt: session.draft, path: session.workspace.isEmpty ? nil : session.workspace)
         if let url = url { if !AppDelegate.shared.externalChatOpener(url) { session.error = "无法打开 Codex，请确认应用已安装。" } }
     }
-    func minimize() { if let session = lastSession { windows[session.id]?.miniaturize(nil) } }
+    func taskWindow(_ taskID: String) -> NSWindow? {
+        if let window = windows[taskID] { return window }
+        guard let session = service.uniqueSessions.first(where: { $0.threadID == taskID }) else { return nil }
+        return windows[session.id]
+    }
+    func isOpen(taskID: String) -> Bool {
+        guard let window = taskWindow(taskID) else { return false }
+        return window.isVisible && !window.isMiniaturized
+    }
+    func minimize(taskID: String) {
+        guard isOpen(taskID: taskID) else { return }
+        taskWindow(taskID)?.miniaturize(nil)
+    }
     func windowDidResize(_ notification: Notification) {
         if let window = notification.object as? NSWindow, let size = window.contentView?.bounds.size { model.preferences.set(size.width, forKey: "chatWidth"); model.preferences.set(size.height, forKey: "chatHeight") }
     }

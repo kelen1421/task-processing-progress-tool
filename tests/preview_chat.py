@@ -35,6 +35,7 @@ shutil.copy(root / 'tests/chat_fixture.py', fixtures / 'chat_fixture.py')
 runner = r'''
 final class PreviewCounts {
     var opens = 0, minimizes = 0
+    var openTaskID: String?
     var changed: (() -> Void)?
 }
 final class PreviewDelegate: NSObject, NSApplicationDelegate {
@@ -49,9 +50,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             model.settings.openMode = .both
             model.chatDestination = .codex
         }
+        if BUILTIN_TOGGLE { model.settings.openMode = .both; model.chatDestination = .builtIn }
         let service = ChatService(model: model, executable: URL(fileURLWithPath: PYTHON_PATH), arguments: [FIXTURE_PATH + "/chat_fixture.py"])
         let counters = counts
-        production = AppDelegate(model: model, chatService: service, externalChatOpener: { _ in counters.opens += 1; counters.changed?(); return true }, externalChatMinimizer: { counters.minimizes += 1; counters.changed?() }, permissionRenewal: AccessibilityPermissionRenewal(reset: { true }, request: {}))
+        production = AppDelegate(model: model, chatService: service, externalChatOpener: { url in counters.opens += 1; counters.openTaskID = url.lastPathComponent; counters.changed?(); return true }, externalChatMinimizer: { counters.minimizes += 1; counters.openTaskID = nil; counters.changed?() }, externalChatIsOpen: { counters.openTaskID == $0 }, permissionRenewal: AccessibilityPermissionRenewal(reset: { true }, request: {}))
         super.init()
         counts.changed = { [weak self] in self?.updateTitle() }
     }
@@ -73,7 +75,7 @@ let app = NSApplication.shared
 let delegate = PreviewDelegate()
 app.delegate = delegate
 app.run()
-'''.replace('PREVIEW_SUITE', json.dumps(suite)).replace('FIXTURE_PATH', json.dumps(str(fixtures))).replace('PYTHON_PATH', json.dumps(sys.executable)).replace('COMBINED_CLICKS', 'true' if os.environ.get('TASK_PROGRESS_PREVIEW_BOTH_OPEN') == '1' else 'false')
+'''.replace('PREVIEW_SUITE', json.dumps(suite)).replace('FIXTURE_PATH', json.dumps(str(fixtures))).replace('PYTHON_PATH', json.dumps(sys.executable)).replace('COMBINED_CLICKS', 'true' if os.environ.get('TASK_PROGRESS_PREVIEW_BOTH_OPEN') == '1' else 'false').replace('BUILTIN_TOGGLE', 'true' if os.environ.get('TASK_PROGRESS_PREVIEW_TOGGLE') == '1' else 'false')
 with tempfile.TemporaryDirectory(prefix='task-progress-preview-build-') as temporary:
     sources = Path(temporary)
     for source in (root / 'Sources').glob('*.swift'):

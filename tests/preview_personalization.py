@@ -52,7 +52,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     func updateTitle() { production.panel.title = "预览 · 打开 \(opens) 次 · 最小化 \(minimizes) 次" }
     func applicationDidFinishLaunching(_ notification: Notification) {
         production.applicationDidFinishLaunching(notification)
-        let dashboard = Dashboard(model: production.model, onMinimize: { [weak self] in self?.minimizes += 1; self?.updateTitle() }, openChatURL: { [weak self] _ in self?.opens += 1; self?.updateTitle(); return true })
+        let dashboard = Dashboard(model: production.model, onMinimize: { [weak self] _ in self?.minimizes += 1; self?.updateTitle() }, openChatURL: { [weak self] _ in self?.opens += 1; self?.updateTitle(); return true })
         let host = NSHostingView(rootView: dashboard); host.sizingOptions = []
         production.panel.contentView = host
         updateTitle()

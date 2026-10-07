@@ -14,3 +14,4 @@ with tempfile.TemporaryDirectory(prefix='ai-workbench-chat-check-') as folder:
     db.commit()
     db.close()
     subprocess.run([str(binary), '--selfcheck-chat', sys.executable, str(root / 'tests/chat_fixture.py'), folder], check=True, timeout=90)
+    subprocess.run([str(binary), '--selfcheck-chat-windows', sys.executable, str(root / 'tests/chat_fixture.py'), folder], check=True, timeout=30)

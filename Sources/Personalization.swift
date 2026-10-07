@@ -20,7 +20,7 @@ enum TaskOpenMode: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .single: return "单击打开任务"
         case .double: return "双击打开任务"
-        case .both: return "单击或双击打开任务"
+        case .both: return "单击打开，双击切换任务窗口"
         case .neither: return "右键打开任务"
         }
     }
@@ -39,14 +39,14 @@ enum TaskOpenMode: String, Codable, CaseIterable, Identifiable {
     func explanation(target: String) -> String {
         switch self {
         case .single: return "单击打开\(target)，双击最小化\(target)窗口"
-        case .double: return "单击选中任务，双击打开\(target)"
-        case .both: return "单击或双击都打开\(target)，双击只打开一次；右键可最小化窗口"
+        case .double: return "单击选中任务；双击打开\(target)，已展开时双击最小化"
+        case .both: return "单击打开\(target)；双击在打开与最小化之间切换，不重复打开已展开的窗口"
         case .neither: return "单击选中任务，双击最小化\(target)窗口；右键可打开任务"
         }
     }
-    func action(clickCount: Int) -> TaskClickAction {
+    func action(clickCount: Int, windowIsOpen: Bool = false) -> TaskClickAction {
         if clickCount == 1 { return singleClickOpens ? .open : .select }
-        if clickCount == 2 { return doubleClickOpens ? .open : .minimize }
+        if clickCount == 2 { return doubleClickOpens && !windowIsOpen ? .open : .minimize }
         return .select
     }
 }
@@ -301,7 +301,7 @@ struct PersonalizationView: View {
                         Text("打开任务的方式").font(.headline)
                         Picker("打开位置", selection: $model.chatDestination) { ForEach(TaskChatDestination.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
                         Toggle("单击打开任务", isOn: Binding(get: { model.settings.openMode.singleClickOpens }, set: { model.settings.openMode.singleClickOpens = $0 })).toggleStyle(.checkbox)
-                        Toggle("双击打开任务", isOn: Binding(get: { model.settings.openMode.doubleClickOpens }, set: { model.settings.openMode.doubleClickOpens = $0 })).toggleStyle(.checkbox)
+                        Toggle("双击打开 / 最小化任务", isOn: Binding(get: { model.settings.openMode.doubleClickOpens }, set: { model.settings.openMode.doubleClickOpens = $0 })).toggleStyle(.checkbox)
                         Text(model.taskClickHelp + "。每次只打开所选的一种对话框。")
                             .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                         if model.chatDestination == .codex {

@@ -108,14 +108,36 @@ enum ChatWindowController {
         guard let button = element(window, kAXMinimizeButtonAttribute) else { return false }
         return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
     }
-    static func minimizeChatWindow() -> WindowMinimizeResult {
-        guard AXIsProcessTrusted() else { return .needsPermission }
-        guard let link = URL(string: "codex://threads"),
-              let applicationURL = NSWorkspace.shared.urlForApplication(toOpen: link),
-              let identifier = Bundle(url: applicationURL)?.bundleIdentifier,
-              let application = NSRunningApplication.runningApplications(withBundleIdentifier: identifier).first(where: { !$0.isTerminated }) else { return .noWindow }
+    private static func chatOwner() -> AXUIElement? {
+        guard let link = URL(string: "codex://threads"), let url = NSWorkspace.shared.urlForApplication(toOpen: link),
+              let identifier = Bundle(url: url)?.bundleIdentifier,
+              let application = NSRunningApplication.runningApplications(withBundleIdentifier: identifier).first(where: { !$0.isTerminated }) else { return nil }
         let owner = AXUIElementCreateApplication(application.processIdentifier)
         AXUIElementSetMessagingTimeout(owner, 1)
+        return owner
+    }
+    static func window(title: String?, allowFocused: Bool) -> AXUIElement? {
+        guard AXIsProcessTrusted(), let owner = chatOwner() else { return nil }
+        let windows = value(owner, kAXWindowsAttribute) as? [AXUIElement] ?? []
+        if let title = title, !title.isEmpty, let matched = windows.first(where: {
+            value($0, kAXRoleAttribute) as? String == kAXWindowRole && value($0, kAXTitleAttribute) as? String == title
+        }) { return matched }
+        guard allowFocused else { return nil }
+        return ([element(owner, kAXFocusedWindowAttribute), element(owner, kAXMainWindowAttribute)].compactMap { $0 } + windows).first(where: canMinimize)
+    }
+    static func isOpen(_ window: AXUIElement) -> Bool? {
+        guard AXIsProcessTrusted() else { return nil }
+        guard value(window, kAXRoleAttribute) as? String == kAXWindowRole,
+              let minimized = value(window, kAXMinimizedAttribute) as? Bool else { return false }
+        return !minimized
+    }
+    static func minimizeChatWindow(window: AXUIElement? = nil) -> WindowMinimizeResult {
+        guard AXIsProcessTrusted() else { return .needsPermission }
+        if let window = window {
+            guard isOpen(window) == true else { return .noWindow }
+            return minimize(window) ? .minimized : .failed
+        }
+        guard let owner = chatOwner() else { return .noWindow }
         var result: CFTypeRef?
         let error = AXUIElementCopyAttributeValue(owner, kAXWindowsAttribute as CFString, &result)
         guard error == .success else { return AXIsProcessTrusted() ? .failed : .needsPermission }
@@ -602,6 +624,7 @@ struct ProjectCard: View {
     var height: CGFloat = 84
     var onDoubleClick: () -> Void = {}
     var openChatURL: (URL) -> Bool = { AppDelegate.shared.openTaskChatURL($0) }
+    var isChatOpen: (String) -> Bool = { AppDelegate.shared?.isTaskChatOpen($0) ?? false }
     @State private var showingDetails = false
     @State private var openFailed = false
     var accessibleProgress: String { project.running || project.completed ? project.phaseLabel + "，" + project.progressLabel : project.progressLabel }
@@ -611,7 +634,8 @@ struct ProjectCard: View {
         if project.completed { model.acknowledge(project) }
     }
     func performClick(_ count: Int) {
-        switch model.settings.openMode.action(clickCount: count) {
+        let isOpen = count == 2 && model.settings.openMode.doubleClickOpens && isChatOpen(project.id)
+        switch model.settings.openMode.action(clickCount: count, windowIsOpen: isOpen) {
         case .open: openChat()
         case .select: model.selectedTaskID = project.id
         case .minimize: onDoubleClick()
@@ -806,7 +830,7 @@ struct PanelResizeHandle: View {
 }
 struct Dashboard: View {
     @ObservedObject var model: Model
-    var onMinimize: () -> Void = { AppDelegate.shared.minimizeChatWindow() }
+    var onMinimize: (String) -> Void = { AppDelegate.shared.minimizeChatWindow(taskID: $0) }
     var openChatURL: (URL) -> Bool = { AppDelegate.shared.openTaskChatURL($0) }
     var projects: [ProjectRow] { model.visible.map { model.card(for: $0) } }
     var pages: Int { TaskPagination.pageCount(projects.count) }
@@ -852,7 +876,7 @@ struct Dashboard: View {
                             let index = currentPage * 4 + slot
                             if index < projects.count {
                                 let project = projects[index]
-                                ProjectCard(model: model, project: project, height: cardHeight, onDoubleClick: onMinimize, openChatURL: openChatURL).id(project.id)
+                                ProjectCard(model: model, project: project, height: cardHeight, onDoubleClick: { onMinimize(project.id) }, openChatURL: openChatURL).id(project.id)
                             } else {
                                 EmptyTaskCard(height: cardHeight, settings: model.settings)
                             }
@@ -880,10 +904,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let injectedChatService: ChatService?
     let externalChatOpener: (URL) -> Bool
     private let externalChatMinimizer: (() -> Void)?
+    private let externalChatIsOpen: ((String) -> Bool)?
+    private var lastExternalTaskID: String?
+    private var externalTaskWindows: [String: AXUIElement] = [:]
     private let permissionRenewal: AccessibilityPermissionRenewal
-    init(model: Model = Model(), chatService: ChatService? = nil, externalChatOpener: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }, externalChatMinimizer: (() -> Void)? = nil, permissionRenewal: AccessibilityPermissionRenewal = .live) {
+    init(model: Model = Model(), chatService: ChatService? = nil, externalChatOpener: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }, externalChatMinimizer: (() -> Void)? = nil, externalChatIsOpen: ((String) -> Bool)? = nil, permissionRenewal: AccessibilityPermissionRenewal = .live) {
         self.model = model; self.injectedChatService = chatService; self.externalChatOpener = externalChatOpener
-        self.externalChatMinimizer = externalChatMinimizer; self.permissionRenewal = permissionRenewal; super.init()
+        self.externalChatMinimizer = externalChatMinimizer; self.externalChatIsOpen = externalChatIsOpen; self.permissionRenewal = permissionRenewal; super.init()
     }
     var panel: NSPanel!
     var item: NSStatusItem!
@@ -897,10 +924,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var permissionWindow: NSWindow?
     lazy var chatController = BuiltInChatController(model: model, service: injectedChatService)
     func openTaskChatURL(_ url: URL) -> Bool {
-        if model.chatDestination == .codex { return externalChatOpener(url) }
         guard url.scheme == "codex", url.host == "threads", let id = url.pathComponents.last,
               let row = model.rows.first(where: { $0.id == id }) else { return false }
+        if model.chatDestination == .codex {
+            guard externalChatOpener(url) else { return false }
+            lastExternalTaskID = id
+            if externalChatIsOpen == nil && externalChatMinimizer == nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard let self = self, self.lastExternalTaskID == id else { return }
+                    self.rememberExternalWindow(taskID: id)
+                }
+            }
+            return true
+        }
         chatController.open(row); return true
+    }
+    private func rememberExternalWindow(taskID: String) {
+        let title = model.rows.first(where: { $0.id == taskID })?.title
+        guard let window = ChatWindowController.window(title: title, allowFocused: lastExternalTaskID == taskID) else { return }
+        // A reused external window now belongs to the newly opened task.
+        externalTaskWindows = externalTaskWindows.filter { $0.key == taskID || !CFEqual($0.value, window) }
+        externalTaskWindows[taskID] = window
+    }
+    func isTaskChatOpen(_ taskID: String) -> Bool {
+        if model.chatDestination == .builtIn { return chatController.isOpen(taskID: taskID) }
+        if let check = externalChatIsOpen { return check(taskID) }
+        if externalTaskWindows[taskID] == nil { rememberExternalWindow(taskID: taskID) }
+        if let window = externalTaskWindows[taskID] { return ChatWindowController.isOpen(window) ?? true }
+        // An accepted open request must not be resent while awaiting a window or permission.
+        return lastExternalTaskID == taskID && !AXIsProcessTrusted()
     }
     let permissionStatus = AccessibilityPermissionStatus()
     var permissionNotice = PermissionNoticeState()
@@ -1066,12 +1118,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard model.collapsed, let screen = (panel.screen ?? NSScreen.main)?.visibleFrame else { return }
         panel.setFrameOrigin(NSPoint(x: min(screen.maxX - frame.width, max(screen.minX, frame.minX + translation.width)), y: min(screen.maxY - frame.height, max(screen.minY, frame.minY + translation.height))))
     }
-    func minimizeChatWindow() {
-        if model.chatDestination == .builtIn { chatController.minimize(); return }
+    func minimizeChatWindow(taskID: String) {
+        if model.chatDestination == .builtIn { chatController.minimize(taskID: taskID); return }
         if let minimize = externalChatMinimizer { minimize(); return }
         refreshPermissionStatus()
-        switch ChatWindowController.minimizeChatWindow() {
-        case .minimized, .noWindow: return
+        if externalTaskWindows[taskID] == nil { rememberExternalWindow(taskID: taskID) }
+        switch ChatWindowController.minimizeChatWindow(window: externalTaskWindows[taskID]) {
+        case .minimized, .noWindow:
+            if lastExternalTaskID == taskID { lastExternalTaskID = nil }
+            return
         case .needsPermission:
             if permissionNotice.shouldPresent(authorized: false) { presentPermissionWindow() }
         case .failed:
@@ -1195,6 +1250,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) { chatController.shutdown() }
 }
 if CommandLine.arguments.contains("--diagnose-chat") { exit(ChatChecks.diagnose() ? 0 : 1) }
+if let flag = CommandLine.arguments.firstIndex(of: "--selfcheck-chat-windows"), CommandLine.arguments.count > flag + 3 {
+    ChatWindowChecks.run(python: CommandLine.arguments[flag + 1], fixture: CommandLine.arguments[flag + 2], root: CommandLine.arguments[flag + 3]); exit(0)
+}
 if let flag = CommandLine.arguments.firstIndex(of: "--selfcheck-chat"), CommandLine.arguments.count > flag + 3 {
     ChatChecks.run(python: CommandLine.arguments[flag + 1], fixture: CommandLine.arguments[flag + 2], root: CommandLine.arguments[flag + 3]); exit(0)
 }
@@ -1321,6 +1379,10 @@ if CommandLine.arguments.contains("--selfcheck-personalization") {
     precondition(TaskOpenMode.double.action(clickCount: 1) == .select && TaskOpenMode.double.action(clickCount: 2) == .open)
     precondition(TaskOpenMode.both.action(clickCount: 1) == .open && TaskOpenMode.both.action(clickCount: 2) == .open)
     precondition(TaskOpenMode.neither.action(clickCount: 1) == .select && TaskOpenMode.neither.action(clickCount: 2) == .minimize)
+    for mode in TaskOpenMode.allCases {
+        precondition(mode.action(clickCount: 2, windowIsOpen: true) == .minimize, "An expanded task window must minimize, even when double-click open is enabled")
+        precondition(mode.action(clickCount: 1, windowIsOpen: true) == (mode.singleClickOpens ? .open : .select), "Single click keeps its independent behavior")
+    }
     for oldMode in [TaskOpenMode.single, .double] {
         legacy["openMode"] = oldMode.rawValue
         let decoded = try JSONDecoder().decode(PersonalizationSettings.self, from: JSONSerialization.data(withJSONObject: legacy))
@@ -1356,6 +1418,22 @@ if CommandLine.arguments.contains("--selfcheck-personalization") {
     card = ProjectCard(model: model, project: model.card(for: done), onDoubleClick: { minimizes += 1 }, openChatURL: { _ in opens += 1; return true })
     card.performClick(1); card.performClick(2)
     precondition(opens == 4 && minimizes == 2 && model.isPendingCompletion(done), "Neither enabled: select or minimize without opening or clearing completion")
+    for mode in [TaskOpenMode.double, .both] {
+        model.settings.openMode = mode
+        var expanded = false, targetIDs: [String] = []
+        let previousOpens = opens, previousMinimizes = minimizes
+        done.completionKey = "done:toggle-\(mode.rawValue)"; model.rows = [done]
+        card = ProjectCard(model: model, project: model.card(for: done), onDoubleClick: { minimizes += 1; expanded = false }, openChatURL: { _ in opens += 1; expanded = true; return true }, isChatOpen: { id in targetIDs.append(id); return expanded })
+        card.performClick(2)
+        precondition(opens == previousOpens + 1 && !model.isPendingCompletion(done))
+        done.completionKey = "done:toggle-pending-\(mode.rawValue)"; model.rows = [done]
+        card = ProjectCard(model: model, project: model.card(for: done), onDoubleClick: { minimizes += 1; expanded = false }, openChatURL: { _ in opens += 1; expanded = true; return true }, isChatOpen: { id in targetIDs.append(id); return expanded })
+        card.performClick(2)
+        precondition(opens == previousOpens + 1 && minimizes == previousMinimizes + 1 && model.isPendingCompletion(done), "Minimizing must not reopen or acknowledge a newly completed turn")
+        card.performClick(2)
+        precondition(opens == previousOpens + 2 && minimizes == previousMinimizes + 1 && !model.isPendingCompletion(done))
+        precondition(targetIDs == [done.id, done.id, done.id], "Every toggle checks the clicked task")
+    }
     model.settings = PersonalizationSettings()
     precondition(Model(preferences: preferences).settings == PersonalizationSettings() && model.isPinned(done.id))
     preferences.set(Data("invalid-json".utf8), forKey: "personalization")
