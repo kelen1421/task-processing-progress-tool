@@ -343,7 +343,7 @@ final class Model: ObservableObject {
     }
     var taskClickHelp: String {
         let target = chatDestination == .builtIn ? "内置对话" : "Codex 对话"
-        return settings.openMode == .single ? "单击打开\(target)，双击最小化\(target)窗口" : "单击选中任务，双击打开\(target)"
+        return settings.openMode.explanation(target: target)
     }
     func applyPreset(_ preset: PersonalizationPreset) {
         let mode = settings.openMode
@@ -1254,14 +1254,26 @@ if CommandLine.arguments.contains("--selfcheck-personalization") {
     precondition(model.settings == PersonalizationSettings(), "Existing users keep the original layout and click mode")
     model.togglePin("done")
     model.preferences.set(320.0, forKey: "progressWidth")
-    model.settings.openMode = .double
-    for preset in PersonalizationPreset.allCases {
-        model.applyPreset(preset)
-        precondition(preset.matches(model.settings) && model.settings.openMode == .double, "Appearance presets must keep the user's click mode")
-        let restored = Model(preferences: preferences)
-        precondition(restored.settings == model.settings && restored.isPinned("done"))
-        precondition(preferences.double(forKey: "progressWidth") == 320, "Appearance changes must keep pins and panel size")
+    for mode in TaskOpenMode.allCases {
+        model.settings.openMode = mode
+        for preset in PersonalizationPreset.allCases {
+            model.applyPreset(preset)
+            precondition(preset.matches(model.settings) && model.settings.openMode == mode, "Appearance presets must keep both independent click choices")
+            let restored = Model(preferences: preferences)
+            precondition(restored.settings == model.settings && restored.isPinned("done"))
+            precondition(preferences.double(forKey: "progressWidth") == 320, "Appearance changes must keep pins and panel size")
+        }
+        for single in [false, true] {
+            for double in [false, true] {
+                var changed = mode
+                changed.singleClickOpens = single
+                precondition(changed.singleClickOpens == single && changed.doubleClickOpens == mode.doubleClickOpens)
+                changed.doubleClickOpens = double
+                precondition(changed.singleClickOpens == single && changed.doubleClickOpens == double)
+            }
+        }
     }
+    model.settings.openMode = .double
     model.settings.progress = RGBColor(hex: 0x123ABC)
     model.settings.backgroundOpacity = 0.5
     model.settings.background = RGBColor(hex: 0xFAFAFA)
@@ -1278,6 +1290,13 @@ if CommandLine.arguments.contains("--selfcheck-personalization") {
     precondition(model.settings.scheme == .dark)
     precondition(TaskOpenMode.single.action(clickCount: 1) == .open && TaskOpenMode.single.action(clickCount: 2) == .minimize)
     precondition(TaskOpenMode.double.action(clickCount: 1) == .select && TaskOpenMode.double.action(clickCount: 2) == .open)
+    precondition(TaskOpenMode.both.action(clickCount: 1) == .open && TaskOpenMode.both.action(clickCount: 2) == .open)
+    precondition(TaskOpenMode.neither.action(clickCount: 1) == .select && TaskOpenMode.neither.action(clickCount: 2) == .minimize)
+    for oldMode in [TaskOpenMode.single, .double] {
+        legacy["openMode"] = oldMode.rawValue
+        let decoded = try JSONDecoder().decode(PersonalizationSettings.self, from: JSONSerialization.data(withJSONObject: legacy))
+        precondition(decoded.openMode == oldMode && decoded.backgroundOpacity == 1, "Old radio choices must migrate unchanged")
+    }
     var done = TaskRow(id: "done", title: "完成测试", project: "fixture", path: "", state: "本轮结束")
     done.completionKey = "done:turn1"; done.completedAt = now.addingTimeInterval(1)
     model.rows = [done]
@@ -1295,6 +1314,19 @@ if CommandLine.arguments.contains("--selfcheck-personalization") {
     precondition(model.selectedTaskID == done.id && opens == 1 && minimizes == 1 && model.isPendingCompletion(done), "Selection must not open, minimize or acknowledge")
     card.performClick(2)
     precondition(opens == 2 && minimizes == 1 && !model.isPendingCompletion(done) && model.isPinned(done.id))
+    model.settings.openMode = .both
+    for count in [1, 2] {
+        done.completionKey = "done:combined-\(count)"; model.rows = [done]
+        card = ProjectCard(model: model, project: model.card(for: done), onDoubleClick: { minimizes += 1 }, openChatURL: { _ in opens += 1; return true })
+        let previousOpens = opens
+        card.performClick(count)
+        precondition(opens == previousOpens + 1 && minimizes == 1 && !model.isPendingCompletion(done) && model.isPinned(done.id), "Both enabled: each gesture opens once and acknowledges completion without minimizing")
+    }
+    model.settings.openMode = .neither
+    done.completionKey = "done:neither"; model.rows = [done]
+    card = ProjectCard(model: model, project: model.card(for: done), onDoubleClick: { minimizes += 1 }, openChatURL: { _ in opens += 1; return true })
+    card.performClick(1); card.performClick(2)
+    precondition(opens == 4 && minimizes == 2 && model.isPendingCompletion(done), "Neither enabled: select or minimize without opening or clearing completion")
     model.settings = PersonalizationSettings()
     precondition(Model(preferences: preferences).settings == PersonalizationSettings() && model.isPinned(done.id))
     preferences.set(Data("invalid-json".utf8), forKey: "personalization")

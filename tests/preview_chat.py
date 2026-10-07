@@ -45,6 +45,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         let model = Model(reader: Reader(root: FIXTURE_PATH), preferences: preferences, now: Date(timeIntervalSince1970: 0))
         model.togglePin("fixture"); model.togglePin("second")
         model.settings.backgroundOpacity = 0.5
+        if COMBINED_CLICKS {
+            model.settings.openMode = .both
+            model.chatDestination = .codex
+        }
         let service = ChatService(model: model, executable: URL(fileURLWithPath: PYTHON_PATH), arguments: [FIXTURE_PATH + "/chat_fixture.py"])
         let counters = counts
         production = AppDelegate(model: model, chatService: service, externalChatOpener: { _ in counters.opens += 1; counters.changed?(); return true }, externalChatMinimizer: { counters.minimizes += 1; counters.changed?() })
@@ -69,7 +73,7 @@ let app = NSApplication.shared
 let delegate = PreviewDelegate()
 app.delegate = delegate
 app.run()
-'''.replace('PREVIEW_SUITE', json.dumps(suite)).replace('FIXTURE_PATH', json.dumps(str(fixtures))).replace('PYTHON_PATH', json.dumps(sys.executable))
+'''.replace('PREVIEW_SUITE', json.dumps(suite)).replace('FIXTURE_PATH', json.dumps(str(fixtures))).replace('PYTHON_PATH', json.dumps(sys.executable)).replace('COMBINED_CLICKS', 'true' if os.environ.get('TASK_PROGRESS_PREVIEW_BOTH_OPEN') == '1' else 'false')
 with tempfile.TemporaryDirectory(prefix='task-progress-preview-build-') as temporary:
     sources = Path(temporary)
     for source in (root / 'Sources').glob('*.swift'):

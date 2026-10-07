@@ -14,18 +14,40 @@ enum TaskProgressStyle: String, Codable, CaseIterable, Identifiable {
 }
 enum TaskClickAction: Equatable { case open, select, minimize }
 enum TaskOpenMode: String, Codable, CaseIterable, Identifiable {
-    case single, double
+    case single, double, both, neither
     var id: String { rawValue }
-    var title: String { self == .single ? "单击打开任务" : "双击打开任务" }
-    var help: String {
-        self == .single ? "单击打开任务聊天，双击最小化所选聊天窗口" : "单击选中任务，双击打开任务聊天"
+    var title: String {
+        switch self {
+        case .single: return "单击打开任务"
+        case .double: return "双击打开任务"
+        case .both: return "单击或双击打开任务"
+        case .neither: return "右键打开任务"
+        }
+    }
+    var singleClickOpens: Bool {
+        get { self == .single || self == .both }
+        set { self = Self.mode(single: newValue, double: doubleClickOpens) }
+    }
+    var doubleClickOpens: Bool {
+        get { self == .double || self == .both }
+        set { self = Self.mode(single: singleClickOpens, double: newValue) }
+    }
+    private static func mode(single: Bool, double: Bool) -> Self {
+        single ? (double ? .both : .single) : (double ? .double : .neither)
+    }
+    var help: String { explanation(target: "任务聊天") }
+    func explanation(target: String) -> String {
+        switch self {
+        case .single: return "单击打开\(target)，双击最小化\(target)窗口"
+        case .double: return "单击选中任务，双击打开\(target)"
+        case .both: return "单击或双击都打开\(target)，双击只打开一次；右键可最小化窗口"
+        case .neither: return "单击选中任务，双击最小化\(target)窗口；右键可打开任务"
+        }
     }
     func action(clickCount: Int) -> TaskClickAction {
-        switch (self, clickCount) {
-        case (.single, 1), (.double, 2): return .open
-        case (.single, 2): return .minimize
-        default: return .select
-        }
+        if clickCount == 1 { return singleClickOpens ? .open : .select }
+        if clickCount == 2 { return doubleClickOpens ? .open : .minimize }
+        return .select
     }
 }
 struct RGBColor: Codable, Equatable {
@@ -159,7 +181,10 @@ struct TaskCardContent: View {
         }
     }
     var remainingText: String {
-        if project.completed && settings.openMode == .double { return project.pinned ? "已固定 · 双击查看" : "双击查看后移除" }
+        if project.completed && !settings.openMode.singleClickOpens {
+            if settings.openMode.doubleClickOpens { return project.pinned ? "已固定 · 双击查看" : "双击查看后移除" }
+            return project.pinned ? "已固定 · 右键查看" : "右键查看后移除"
+        }
         return project.remaining
     }
     var remaining: some View { Text(remainingText).font(.system(size: 8)).foregroundColor(.secondary).lineLimit(1) }
@@ -275,7 +300,8 @@ struct PersonalizationView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("打开任务的方式").font(.headline)
                         Picker("打开位置", selection: $model.chatDestination) { ForEach(TaskChatDestination.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
-                        Picker("打开任务", selection: $model.settings.openMode) { ForEach(TaskOpenMode.allCases) { Text($0.title).tag($0) } }.pickerStyle(.radioGroup).labelsHidden()
+                        Toggle("单击打开任务", isOn: Binding(get: { model.settings.openMode.singleClickOpens }, set: { model.settings.openMode.singleClickOpens = $0 })).toggleStyle(.checkbox)
+                        Toggle("双击打开任务", isOn: Binding(get: { model.settings.openMode.doubleClickOpens }, set: { model.settings.openMode.doubleClickOpens = $0 })).toggleStyle(.checkbox)
                         Text(model.taskClickHelp + "。每次只打开所选的一种对话框。")
                             .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                         if model.chatDestination == .builtIn {

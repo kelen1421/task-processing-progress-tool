@@ -53,8 +53,13 @@ enum ChatChecks {
         precondition(restored.chatDestination == .codex && restored.recentChatCount == 5 && restored.settings.openMode == .double)
         for destination in TaskChatDestination.allCases {
             model.chatDestination = destination
-            precondition(model.settings.openMode.action(clickCount: 2) == .open)
-            precondition(model.taskClickHelp.contains(destination == .builtIn ? "内置对话" : "Codex 对话"))
+            for mode in TaskOpenMode.allCases {
+                model.settings.openMode = mode
+                precondition(model.settings.openMode.action(clickCount: 2) == (mode.doubleClickOpens ? .open : .minimize))
+                precondition(model.taskClickHelp.contains(destination == .builtIn ? "内置对话" : "Codex 对话"))
+                let roundTrip = Model(reader: Reader(root: root), preferences: preferences)
+                precondition(roundTrip.chatDestination == destination && roundTrip.settings.openMode == mode, "Destination and independent click choices persist separately")
+            }
         }
         let service = ChatService(model: model, executable: URL(fileURLWithPath: python), arguments: [fixture])
         defer { service.rpc.stop() }

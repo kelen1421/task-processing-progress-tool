@@ -1,6 +1,6 @@
 {
   "name": "task-processing-progress",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "description": "可个性化的 macOS AI 任务工作台，展示 Codex 进度并支持轻量内置对话。",
   "author": {
     "name": "个人"
