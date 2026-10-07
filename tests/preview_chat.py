@@ -51,7 +51,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         }
         let service = ChatService(model: model, executable: URL(fileURLWithPath: PYTHON_PATH), arguments: [FIXTURE_PATH + "/chat_fixture.py"])
         let counters = counts
-        production = AppDelegate(model: model, chatService: service, externalChatOpener: { _ in counters.opens += 1; counters.changed?(); return true }, externalChatMinimizer: { counters.minimizes += 1; counters.changed?() })
+        production = AppDelegate(model: model, chatService: service, externalChatOpener: { _ in counters.opens += 1; counters.changed?(); return true }, externalChatMinimizer: { counters.minimizes += 1; counters.changed?() }, permissionRenewal: AccessibilityPermissionRenewal(reset: { true }, request: {}))
         super.init()
         counts.changed = { [weak self] in self?.updateTitle() }
     }

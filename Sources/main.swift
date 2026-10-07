@@ -26,6 +26,7 @@ struct PermissionNoticeState {
 final class AccessibilityPermissionStatus: ObservableObject {
     @Published var authorized = false
     @Published var upgradeVersion: String?
+    @Published var renewalResult: PermissionRenewalResult = .unchanged
     let applicationPath: String
     let check: () -> Bool
     init(applicationPath: String = Bundle.main.bundlePath, check: @escaping () -> Bool = { AXIsProcessTrusted() }) {
@@ -37,6 +38,14 @@ struct AccessibilityPermissionView: View {
     @ObservedObject var status: AccessibilityPermissionStatus
     var restart: () -> Void
     var close: () -> Void
+    var instructions: String {
+        if status.authorized { return "可以关闭此窗口。右键任务方框，选择“最小化聊天窗口”；未开启双击打开时，也可双击最小化。" }
+        switch status.renewalResult {
+        case .requested: return "旧版授权已移除，已重新申请当前版本权限。请打开系统辅助功能设置，开启“ai工作台”，并在系统窗口完成身份验证。这里会自动检测是否生效。"
+        case .resetFailed: return "系统未能自动移除旧授权。请在辅助功能设置中删除旧的“ai工作台”，再点 + 添加下面的当前应用并开启权限。其他应用的权限不受影响。"
+        case .unchanged: return "系统设置中的开关开启后，这里会自动检测。若开关已开启却仍未生效，请删除旧的同名条目，再点 + 添加下面这份应用并开启权限。"
+        }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let version = status.upgradeVersion {
@@ -44,7 +53,7 @@ struct AccessibilityPermissionView: View {
             }
             Label(status.authorized ? "辅助功能权限已生效" : "辅助功能权限尚未生效", systemImage: status.authorized ? "checkmark.circle.fill" : "lock.circle")
                 .font(.headline).foregroundColor(status.authorized ? .green : .primary)
-            Text(status.authorized ? "可以关闭此窗口。右键任务方框，选择“最小化聊天窗口”；未开启双击打开时，也可双击最小化。" : "系统设置中的开关开启后，这里会自动检测。若开关已开启却仍未生效，请删除旧的同名条目，再点 + 添加下面这份应用并开启权限。")
+            Text(instructions)
                 .fixedSize(horizontal: false, vertical: true)
             Text("当前运行的应用").font(.caption).foregroundColor(.secondary)
             Text(status.applicationPath).font(.caption).textSelection(.enabled)
@@ -871,9 +880,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let injectedChatService: ChatService?
     let externalChatOpener: (URL) -> Bool
     private let externalChatMinimizer: (() -> Void)?
-    init(model: Model = Model(), chatService: ChatService? = nil, externalChatOpener: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }, externalChatMinimizer: (() -> Void)? = nil) {
+    private let permissionRenewal: AccessibilityPermissionRenewal
+    init(model: Model = Model(), chatService: ChatService? = nil, externalChatOpener: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }, externalChatMinimizer: (() -> Void)? = nil, permissionRenewal: AccessibilityPermissionRenewal = .live) {
         self.model = model; self.injectedChatService = chatService; self.externalChatOpener = externalChatOpener
-        self.externalChatMinimizer = externalChatMinimizer; super.init()
+        self.externalChatMinimizer = externalChatMinimizer; self.permissionRenewal = permissionRenewal; super.init()
     }
     var panel: NSPanel!
     var item: NSStatusItem!
@@ -954,7 +964,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(position), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
-        let configurePermissions = PermissionVersionConfiguration.shouldConfigure(version: version + ":" + build, preferences: model.preferences)
+        let renewal = permissionRenewal.configure(version: version + ":" + build, preferences: model.preferences)
+        let configurePermissions = renewal != .unchanged
+        permissionStatus.renewalResult = renewal
+        refreshPermissionStatus()
         if configurePermissions { permissionStatus.upgradeVersion = version }
         if configurePermissions || CommandLine.arguments.contains("--show-permissions") { showPermissionSettings() }
         if CommandLine.arguments.contains("--show-personalization") { showPersonalization() }
@@ -1360,6 +1373,15 @@ if CommandLine.arguments.contains("--selfcheck-permissions") {
     let preferences = UserDefaults(suiteName: suite)!
     defer { preferences.removePersistentDomain(forName: suite) }
     preferences.set(["fixture-pin"], forKey: "pinnedTasks")
+    var operations: [String] = []
+    let renewal = AccessibilityPermissionRenewal(reset: { operations.append("remove old"); return true }, request: { operations.append("request new") })
+    precondition(renewal.configure(version: "fixture:1", preferences: preferences) == .requested)
+    precondition(operations == ["remove old", "request new"], "Remove old authorization before requesting the new process")
+    precondition(renewal.configure(version: "fixture:1", preferences: preferences) == .unchanged && operations.count == 2, "Relaunch must not remove a newly granted permission")
+    precondition(renewal.configure(version: "fixture:2", preferences: preferences) == .requested && operations.count == 4)
+    let failed = AccessibilityPermissionRenewal(reset: { operations.append("reset failed"); return false }, request: { preconditionFailure("A failed removal must not pretend the new request succeeded") })
+    precondition(failed.configure(version: "fixture:3", preferences: preferences) == .resetFailed)
+    precondition(failed.configure(version: "fixture:3", preferences: preferences) == .unchanged, "Failure must not loop on each restart; keep manual repair available")
     precondition(PermissionVersionConfiguration.shouldConfigure(version: "1.9.3", preferences: preferences), "Existing users without a version marker receive the new configuration flow")
     precondition(!PermissionVersionConfiguration.shouldConfigure(version: "1.9.3", preferences: preferences), "Relaunching the same version must not repeat the upgrade flow")
     precondition(PermissionVersionConfiguration.shouldConfigure(version: "1.9.4", preferences: preferences), "Every new version must start configuration once")
@@ -1381,7 +1403,7 @@ if CommandLine.arguments.contains("--selfcheck-permissions") {
     granted = false; status.refresh(); notice.observe(authorized: status.authorized)
     precondition(!status.authorized && notice.shouldPresent(authorized: status.authorized), "A later revocation can show one new notice")
     precondition(!notice.shouldPresent(authorized: false))
-    print("PASS: one configuration per version, preserved preferences, coalesced denial notice, explicit repair, grant refresh, later revocation")
+    print("PASS: ordered old grant removal and new request, no repeat reset, reset failure, version/build configuration, preserved preferences, coalesced denial notice, explicit repair, grant refresh, later revocation")
     exit(0)
 }
 if CommandLine.arguments.contains("--selfcheck-window-actions") {

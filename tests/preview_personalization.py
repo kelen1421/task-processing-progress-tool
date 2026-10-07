@@ -46,7 +46,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         let preferences = UserDefaults(suiteName: PREVIEW_SUITE)!
         let model = Model(reader: Reader(root: FIXTURE_PATH), preferences: preferences, now: Date(timeIntervalSince1970: 0))
         if model.pinnedTaskIDs.isEmpty { model.togglePin("preview-done"); model.togglePin("preview-waiting") }
-        production = AppDelegate(model: model)
+        production = AppDelegate(model: model, permissionRenewal: AccessibilityPermissionRenewal(reset: { true }, request: {}))
         super.init()
     }
     func updateTitle() { production.panel.title = "预览 · 打开 \(opens) 次 · 最小化 \(minimizes) 次" }
