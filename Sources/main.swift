@@ -4,6 +4,14 @@ import SQLite3
 import ApplicationServices
 
 enum WindowMinimizeResult: Equatable { case minimized, noWindow, needsPermission, failed }
+enum PermissionVersionConfiguration {
+    static func shouldConfigure(version: String, preferences: UserDefaults) -> Bool {
+        let key = "lastPermissionSetupVersion"
+        guard preferences.string(forKey: key) != version else { return false }
+        preferences.set(version, forKey: key)
+        return true
+    }
+}
 struct PermissionNoticeState {
     private(set) var automaticNoticeShown = false
     mutating func shouldPresent(authorized: Bool, explicitlyRequested: Bool = false) -> Bool {
@@ -17,6 +25,7 @@ struct PermissionNoticeState {
 }
 final class AccessibilityPermissionStatus: ObservableObject {
     @Published var authorized = false
+    @Published var upgradeVersion: String?
     let applicationPath: String
     let check: () -> Bool
     init(applicationPath: String = Bundle.main.bundlePath, check: @escaping () -> Bool = { AXIsProcessTrusted() }) {
@@ -30,6 +39,9 @@ struct AccessibilityPermissionView: View {
     var close: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if let version = status.upgradeVersion {
+                Text("版本更新 · \(version) 权限配置").font(.caption).foregroundColor(.secondary)
+            }
             Label(status.authorized ? "辅助功能权限已生效" : "辅助功能权限尚未生效", systemImage: status.authorized ? "checkmark.circle.fill" : "lock.circle")
                 .font(.headline).foregroundColor(status.authorized ? .green : .primary)
             Text(status.authorized ? "可以关闭此窗口，再双击任务方框最小化聊天窗口。" : "系统设置中的开关开启后，这里会自动检测。若开关已开启却仍未生效，请删除旧的同名条目，再点 + 添加下面这份应用并开启权限。")
@@ -940,7 +952,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.refreshPermissionStatus()
         }
         NotificationCenter.default.addObserver(self, selector: #selector(position), name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        if CommandLine.arguments.contains("--show-permissions") { showPermissionSettings() }
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let configurePermissions = PermissionVersionConfiguration.shouldConfigure(version: version, preferences: model.preferences)
+        if configurePermissions { permissionStatus.upgradeVersion = version }
+        if configurePermissions || CommandLine.arguments.contains("--show-permissions") { showPermissionSettings() }
         if CommandLine.arguments.contains("--show-personalization") { showPersonalization() }
     }
     @objc func position() {
@@ -1067,7 +1082,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let window = permissionWindow {
             NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil); return
         }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 310), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 340), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "辅助功能权限 / 修复"; window.level = .floating
         window.isReleasedWhenClosed = false; window.delegate = self
         window.contentView = NSHostingView(rootView: AccessibilityPermissionView(status: permissionStatus, restart: { [weak self] in self?.restartApplication() }, close: { [weak self] in self?.permissionWindow?.close() }))
@@ -1340,6 +1355,15 @@ if CommandLine.arguments.contains("--selfcheck-personalization") {
     exit(0)
 }
 if CommandLine.arguments.contains("--selfcheck-permissions") {
+    let suite = "local.codex.progress.permission-upgrade-test." + UUID().uuidString
+    let preferences = UserDefaults(suiteName: suite)!
+    defer { preferences.removePersistentDomain(forName: suite) }
+    preferences.set(["fixture-pin"], forKey: "pinnedTasks")
+    precondition(PermissionVersionConfiguration.shouldConfigure(version: "1.9.3", preferences: preferences), "Existing users without a version marker receive the new configuration flow")
+    precondition(!PermissionVersionConfiguration.shouldConfigure(version: "1.9.3", preferences: preferences), "Relaunching the same version must not repeat the upgrade flow")
+    precondition(PermissionVersionConfiguration.shouldConfigure(version: "1.9.4", preferences: preferences), "Every new version must start configuration once")
+    precondition(!PermissionVersionConfiguration.shouldConfigure(version: "1.9.4", preferences: preferences))
+    precondition(preferences.stringArray(forKey: "pinnedTasks") == ["fixture-pin"], "Permission configuration must not reset task preferences")
     var notice = PermissionNoticeState()
     var presentations = 0
     for _ in 0..<100 { if notice.shouldPresent(authorized: false) { presentations += 1 } }
@@ -1354,7 +1378,7 @@ if CommandLine.arguments.contains("--selfcheck-permissions") {
     granted = false; status.refresh(); notice.observe(authorized: status.authorized)
     precondition(!status.authorized && notice.shouldPresent(authorized: status.authorized), "A later revocation can show one new notice")
     precondition(!notice.shouldPresent(authorized: false))
-    print("PASS: coalesced denial notice, explicit repair, grant refresh, later revocation")
+    print("PASS: one configuration per version, preserved preferences, coalesced denial notice, explicit repair, grant refresh, later revocation")
     exit(0)
 }
 if CommandLine.arguments.contains("--selfcheck-window-actions") {

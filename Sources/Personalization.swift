@@ -304,6 +304,9 @@ struct PersonalizationView: View {
                         Toggle("双击打开任务", isOn: Binding(get: { model.settings.openMode.doubleClickOpens }, set: { model.settings.openMode.doubleClickOpens = $0 })).toggleStyle(.checkbox)
                         Text(model.taskClickHelp + "。每次只打开所选的一种对话框。")
                             .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                        if model.chatDestination == .codex {
+                            Button("辅助功能权限 / 修复") { AppDelegate.shared.showPermissionSettings() }
+                        }
                         if model.chatDestination == .builtIn {
                             Picker("最近消息", selection: $model.recentChatCount) { ForEach([5, 10, 20], id: \.self) { Text("最近 \($0) 条").tag($0) } }.pickerStyle(.segmented)
                             Text("仅限制内置窗口显示的消息条数，任务的完整上下文会保留。").font(.caption).foregroundColor(.secondary)
