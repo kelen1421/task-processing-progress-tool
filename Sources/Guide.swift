@@ -7,7 +7,7 @@ enum GuideStep: Int, CaseIterable, Identifiable {
     var symbol: String { ["square.grid.2x2", "chart.bar", "pin", "plus.bubble", "slider.horizontal.3", "circle"][rawValue] }
     func explanation(mode: TaskOpenMode, destination: TaskChatDestination) -> String {
         switch self {
-        case .tasks: return "每个聊天任务占一个位置，进行中的任务优先显示；可按项目筛选，用滚轮上下翻页或点击底部箭头。当前设置：\(mode.help)。"
+        case .tasks: return "每个聊天任务占一个位置，已完成待查看的任务优先显示，其后是其他固定任务和进行中的任务；可按项目筛选，用滚轮上下翻页或点击底部箭头。当前设置：\(mode.help)。"
         case .progress: return "百分比帮助判断当前阶段。有计划时按已完成步骤计算；没有计划时用 ≈ 标注准备、实现、验证、收尾的阶段估计，不表示精确剩余时间。完成任务显示 100%，打开查看后清除提醒。"
         case .pinning: return "右键任务，可固定到任务栏、取消锁定、打开聊天、最小化窗口或查看详情。固定任务会保留，未开始时显示等待中；已完成任务打开后改为等待中，仍保留位置，再次执行后更新进度。"
         case .entry: return "点击空白位置，选择进入已有任务，或填写新任务和项目。四个位置占满时向下滚动，下一页保留空白入口。新建内容会带入\(destination == .builtIn ? "内置对话" : "Codex")输入框，点击发送后才开始执行。菜单栏也有任务入口。"

@@ -427,6 +427,8 @@ final class Model: ObservableObject {
     var visible: [TaskRow] { rows.filter { row in
         return (isPinned(row.id) || row.state == "运行中" || isPendingCompletion(row)) && (selected == "全部项目" || row.projectKey == selected)
     }.sorted { a, b in
+        let aCompleted = isPendingCompletion(a), bCompleted = isPendingCompletion(b)
+        if aCompleted != bCompleted { return aCompleted }
         let aPin = pinnedTaskIDs.firstIndex(of: a.id), bPin = pinnedTaskIDs.firstIndex(of: b.id)
         if let aPin = aPin, let bPin = bPin { return aPin < bPin }
         if (aPin != nil) != (bPin != nil) { return aPin != nil }
@@ -1518,13 +1520,14 @@ if CommandLine.arguments.contains("--selfcheck-pinning") {
     model.rows = [waiting, running, done]
     precondition(!model.visible.contains { $0.id == waiting.id })
     model.togglePin(waiting.id)
-    precondition(model.visible.first?.id == waiting.id && model.card(for: waiting).pinned)
+    precondition(model.visible.map(\.id) == [done.id, waiting.id, running.id] && model.card(for: waiting).pinned, "Unviewed completions must precede pinned waiting tasks")
     precondition(model.card(for: waiting).progressLabel == "等待中" && model.card(for: waiting).percent == 0)
     precondition(Model(preferences: preferences).isPinned(waiting.id), "Pins must survive restart")
     model.togglePin(running.id)
-    precondition(model.visible.prefix(2).map(\.id) == [waiting.id, running.id], "Pins must keep their order before automatic tasks")
+    precondition(model.visible.map(\.id) == [done.id, waiting.id, running.id], "Completions first; other pins keep their order")
     model.togglePin(done.id)
     model.acknowledge(model.card(for: done))
+    precondition(model.visible.map(\.id) == [waiting.id, running.id, done.id], "Viewed pinned completions leave the completion priority and return to pin order")
     precondition(model.visible.contains { $0.id == done.id }, "Viewed pinned completion must remain on the taskbar")
     precondition(model.card(for: done).waiting && model.visible.first { $0.id == done.id }?.state == "等待中", "Viewed pinned completion must reset its displayed progress to waiting")
     let restarted = Model(preferences: preferences, now: now); restarted.rows = [done]
@@ -1721,7 +1724,7 @@ if CommandLine.arguments.contains("--selfcheck-lifecycle") {
     done.completionKey = "done:turn1"; done.completedAt = now.addingTimeInterval(1)
     var old = done; old.id = "old"; old.completionKey = "old:turn1"; old.completedAt = now.addingTimeInterval(-1)
     model.rows = [done, old, active]
-    precondition(model.visible.map(\.id) == ["active", "done"], "Active tasks first; completion retained; historical tasks excluded")
+    precondition(model.visible.map(\.id) == ["done", "active"], "Unviewed completions first; active tasks retained; historical tasks excluded")
     precondition(ProjectRow(id: done.id, tasks: [done]).percent == 100)
     model.acknowledge(ProjectRow(id: done.id, tasks: [done]))
     precondition(model.visible.map(\.id) == ["active"], "Clicked completion removed")
